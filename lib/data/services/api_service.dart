@@ -103,8 +103,12 @@ class ApiService {
   Future<Map<String,dynamic>> sendOtp(String phone) async =>
       await _req('POST', '/auth/send-otp', auth: false, body: {'phone': phone});
 
-  Future<Map<String,dynamic>> gardenerLogin(String phone, String otp) async =>
-      await _req('POST', '/auth/gardener-login', auth: false, body: {'phone': phone, 'otp': otp});
+  Future<Map<String,dynamic>> gardenerLogin(String phone, String otp, {String? fcmToken}) async =>
+      await _req('POST', '/auth/gardener-login', auth: false, body: {
+        'phone': phone, 
+        'otp': otp,
+        if (fcmToken != null) 'fcm_token': fcmToken,
+      });
 
   Future<Map<String,dynamic>> registerGardener({
     required String name, required String phone,

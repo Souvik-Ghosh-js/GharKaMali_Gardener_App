@@ -58,12 +58,22 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
     }
   }
 
-  void _manageLocation() {
+  Future<void> _manageLocation() async {
     final active = ['en_route','arrived','in_progress'].contains(_status);
     if (active && _locTimer == null) {
+      // Permission check
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.deniedForever || permission == LocationPermission.denied) {
+        if (mounted) showAppToast(context, 'Location permission is required for tracking', isError: true);
+        return;
+      }
+
       _locTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
         try {
-          final pos = await Geolocator.getCurrentPosition();
+          final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
           await _api.updateLocation(pos.latitude, pos.longitude, bookingId: widget.jobId);
         } catch (_) {}
       });
