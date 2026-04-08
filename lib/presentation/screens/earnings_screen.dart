@@ -66,10 +66,11 @@ class _EarningsScreenState extends State<EarningsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final totalEarnings = (_earnings?['total_earnings'] ?? _earnings?['totalEarnings'] ?? 0) as num;
-    final totalJobs     = (_earnings?['total_jobs'] ?? _earnings?['completedJobs'] ?? 0) as num;
-    final avgRating     = (_earnings?['avg_rating'] ?? 0) as num;
-    final breakdown     = (_earnings?['breakdown'] ?? _earnings?['periods'] ?? []) as List;
+    final totals = _earnings?['totals'] as Map<String, dynamic>?;
+    final totalEarnings = (totals?['total_earnings'] ?? 0) as num;
+    final totalJobs     = (totals?['total_jobs'] ?? totals?['completed_jobs'] ?? 0) as num;
+    final avgRating     = (totals?['avg_rating'] ?? 0) as num;
+    final breakdown     = (_earnings?['breakdown'] ?? []) as List;
     final totalRewards  = _rewards.where((r) => r['type'] == 'reward').fold<num>(0, (s, r) => s + ((r['amount'] as num?) ?? 0));
 
     return Scaffold(

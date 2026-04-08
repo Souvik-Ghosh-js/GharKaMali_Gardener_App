@@ -70,8 +70,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final isAvailable = gp['is_available'] == true;
     final hour = DateTime.now().hour;
     final greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-    final weeklyTotal = (_earnings?['total_earnings'] ?? _earnings?['totalEarnings'] ?? 0.0) as num;
-    final weeklyJobs  = (_earnings?['total_jobs'] ?? _earnings?['completedJobs'] ?? 0) as num;
+    final totals = _earnings?['totals'] as Map<String, dynamic>?;
+    final weeklyTotal = (totals?['total_earnings'] ?? 0.0) as num;
+    final weeklyJobs  = (totals?['total_jobs'] ?? totals?['completed_jobs'] ?? 0) as num;
     final avgRating   = (gp['avg_rating'] ?? 0.0) as num;
     final activeJobs  = _todayJobs.where((j) => !['completed','cancelled'].contains(j['status'])).toList();
 
