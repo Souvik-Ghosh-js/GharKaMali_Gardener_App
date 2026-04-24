@@ -67,11 +67,16 @@ class _EarningsScreenState extends State<EarningsScreen> {
   @override
   Widget build(BuildContext context) {
     final totals = _earnings?['totals'] as Map<String, dynamic>?;
-    final totalEarnings = (totals?['total_earnings'] ?? 0) as num;
-    final totalJobs     = (totals?['total_jobs'] ?? totals?['completed_jobs'] ?? 0) as num;
-    final avgRating     = (totals?['avg_rating'] ?? 0) as num;
+    num _toNum(dynamic v) {
+      if (v == null) return 0;
+      if (v is num) return v;
+      return num.tryParse(v.toString()) ?? 0;
+    }
+    final totalEarnings = _toNum(totals?['total_earnings']);
+    final totalJobs     = _toNum(totals?['total_jobs'] ?? totals?['completed_jobs']);
+    final avgRating     = _toNum(totals?['avg_rating']);
     final breakdown     = (_earnings?['breakdown'] ?? []) as List;
-    final totalRewards  = _rewards.where((r) => r['type'] == 'reward').fold<num>(0, (s, r) => s + ((r['amount'] as num?) ?? 0));
+    final totalRewards  = _rewards.where((r) => r['type'] == 'reward').fold<num>(0, (s, r) => s + _toNum(r['amount']));
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -225,7 +230,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                           child: BarChart(
                             BarChartData(
                               alignment: BarChartAlignment.spaceAround,
-                              maxY: breakdown.map((b) => (b['earnings'] ?? b['amount'] ?? 0) as num)
+                              maxY: breakdown.map((b) => _toNum(b['earnings'] ?? b['amount']))
                                   .fold<num>(0, (a, b) => a > b ? a : b)
                                   .toDouble() * 1.2,
                               barTouchData: BarTouchData(
@@ -278,7 +283,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                               barGroups: breakdown.asMap().entries.map((e) => BarChartGroupData(
                                 x: e.key,
                                 barRods: [BarChartRodData(
-                                  toY: ((e.value['earnings'] ?? e.value['amount'] ?? 0) as num).toDouble(),
+                                  toY: _toNum(e.value['earnings'] ?? e.value['amount']).toDouble(),
                                   color: AppColors.forest,
                                   width: breakdown.length > 0
                                       ? ((MediaQuery.of(context).size.width - 80) / breakdown.length - 6).clamp(6, 20)
@@ -347,7 +352,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                                     ),
                                   ),
                                   Text(
-                                    '₹${NumberFormat.decimalPattern('en_IN').format(b['earnings'] ?? b['amount'] ?? 0)}',
+                                    '₹${NumberFormat.decimalPattern('en_IN').format(_toNum(b['earnings'] ?? b['amount']))}',
                                     style: GoogleFonts.poppins(
                                         fontSize: 15,
                                         fontWeight: FontWeight.w800,
@@ -427,7 +432,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
                                   ),
                                 ),
                                 Text(
-                                  '${isReward ? '+' : '−'}₹${r['amount'] ?? 0}',
+                                  '${isReward ? '+' : '−'}₹${_toNum(r['amount'])}',
                                   style: GoogleFonts.poppins(
                                       fontSize: 15,
                                       fontWeight: FontWeight.w800,

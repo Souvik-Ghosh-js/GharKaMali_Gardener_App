@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:io' show File;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -24,7 +25,7 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   Timer? _locTimer, _refreshTimer;
   final _otpCtrls = List.generate(4, (_) => TextEditingController());
   final _otpFocus  = List.generate(4, (_) => FocusNode());
-  File? _beforeImg, _afterImg;
+  XFile? _beforeImg, _afterImg;
   final _notesCtrl = TextEditingController();
   int _extraPlants = 0;
 
@@ -90,7 +91,7 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
       await _load(quiet: true);
       if (mounted) showAppToast(context,
         newStatus == 'en_route' ? 'Journey started! Location tracking active' :
-        newStatus == 'arrived'  ? 'Marked as arrived' :
+        newStatus == 'arrived'  ? 'Arrived! Ask the customer for the OTP to start service.' :
         newStatus == 'completed'? 'Job completed! Great work' : 'Status updated',
         isSuccess: true);
     } on ApiException catch (e) {
@@ -98,6 +99,31 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
     } finally {
       if (mounted) setState(() => _acting = false);
     }
+  }
+
+  Future<void> _markFailed() async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => _FailedReasonDialog(),
+    );
+    if (reason == null || !mounted) return;
+    setState(() => _acting = true);
+    HapticFeedback.heavyImpact();
+    try {
+      await _api.updateBookingStatus(bookingId: widget.jobId, status: 'failed', notes: reason);
+      await _load(quiet: true);
+      if (mounted) showAppToast(context, 'Visit marked as failed', isError: true);
+    } on ApiException catch (e) {
+      if (mounted) showAppToast(context, e.message, isError: true);
+    } finally {
+      if (mounted) setState(() => _acting = false);
+    }
+  }
+
+  void _callCustomer() {
+    final phone = _job?['customer']?['phone']?.toString();
+    if (phone == null || phone.isEmpty) return;
+    launchUrl(Uri.parse('tel:$phone'), mode: LaunchMode.externalApplication);
   }
 
   Future<void> _verifyOtp() async {
@@ -136,7 +162,7 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
 
   Future<void> _pickImage(bool isBefore) async {
     final f = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80);
-    if (f != null) setState(() => isBefore ? _beforeImg = File(f.path) : _afterImg = File(f.path));
+    if (f != null) setState(() => isBefore ? _beforeImg = f : _afterImg = f);
   }
 
   Future<void> _openMaps() async {
@@ -200,14 +226,34 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
         )),
 
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(16, -24, 16, 100),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
           sliver: SliverList(delegate: SliverChildListDelegate([
             // ── JOB INFO CARD ────────────────────────────────────────────
             PremiumCard(padding: const EdgeInsets.all(20), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('JOB DETAILS', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 1)),
               const SizedBox(height: 14),
               InfoRow(icon: Icons.location_on_rounded, label: 'ADDRESS', value: _job!['service_address'] ?? '—'),
-              InfoRow(icon: Icons.person_rounded, label: 'CUSTOMER', value: _job!['customer']?['name'] ?? '—'),
+              // Customer row with call button
+              Row(children: [
+                Expanded(child: InfoRow(icon: Icons.person_rounded, label: 'CUSTOMER', value: _job!['customer']?['name'] ?? '—')),
+                if (_job!['customer']?['phone'] != null)
+                  GestureDetector(
+                    onTap: _callCustomer,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.success.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(99),
+                        border: Border.all(color: AppColors.success.withOpacity(0.3)),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.call_rounded, size: 13, color: AppColors.success),
+                        const SizedBox(width: 5),
+                        Text('Call', style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.success)),
+                      ]),
+                    ),
+                  ),
+              ]),
               InfoRow(icon: Icons.access_time_rounded, label: 'TIME', value: _job!['scheduled_time'] ?? 'Flexible'),
               InfoRow(icon: Icons.local_florist_rounded, label: 'PLANTS', value: '${_job!['plant_count'] ?? '?'} plants'),
               if (_job!['customer_notes'] != null && _job!['customer_notes'].toString().isNotEmpty)
@@ -233,8 +279,8 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
               const SizedBox(height: 12),
             ],
 
-            // ── OTP SECTION ──────────────────────────────────────────────
-            if (['assigned','en_route','arrived'].contains(_status)) ...[
+            // ── OTP SECTION (only once gardener has physically arrived) ──
+            if (_status == 'arrived') ...[
               _buildOtpSection(),
               const SizedBox(height: 12),
             ],
@@ -252,6 +298,19 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
             ],
             if (_status == 'en_route') ...[
               GkmButton(label: 'Mark Arrived', icon: Icons.location_on_rounded, loading: _acting, onTap: () => _updateStatus('arrived'), color: AppColors.warning),
+              const SizedBox(height: 12),
+            ],
+            // Mark Failed — customer not home (only available after arriving)
+            if (_status == 'arrived') ...[
+              const SizedBox(height: 4),
+              GkmButton(
+                label: 'Customer Not Home',
+                icon: Icons.person_off_rounded,
+                loading: _acting,
+                onTap: _markFailed,
+                outline: true,
+                danger: true,
+              ),
               const SizedBox(height: 12),
             ],
 
@@ -382,7 +441,7 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
 
 class _PhotoTile extends StatelessWidget {
   final String label;
-  final File? file;
+  final XFile? file;
   final VoidCallback onTap;
   const _PhotoTile({required this.label, required this.file, required this.onTap});
   @override
@@ -395,7 +454,12 @@ class _PhotoTile extends StatelessWidget {
           color: AppColors.bgSubtle,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: file != null ? AppColors.forest : AppColors.border, width: file != null ? 1.5 : 1, style: BorderStyle.solid),
-          image: file != null ? DecorationImage(image: FileImage(file!), fit: BoxFit.cover) : null,
+          image: file != null 
+            ? DecorationImage(
+                image: kIsWeb ? NetworkImage(file!.path) : FileImage(File(file!.path)) as ImageProvider, 
+                fit: BoxFit.cover
+              ) 
+            : null,
         ),
         child: file == null ? Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Icon(Icons.add_a_photo_rounded, size: 24, color: AppColors.textFaint),
@@ -431,6 +495,77 @@ class _CountBtn extends StatelessWidget {
         ),
         child: Icon(icon, size: 18, color: onTap != null ? AppColors.forest : AppColors.textFaint),
       ),
+    );
+  }
+}
+
+// ── FAILED REASON DIALOG ──────────────────────────────────────────────────────
+class _FailedReasonDialog extends StatefulWidget {
+  @override State<_FailedReasonDialog> createState() => _FailedReasonDialogState();
+}
+class _FailedReasonDialogState extends State<_FailedReasonDialog> {
+  final _ctrl = TextEditingController();
+  String _selected = 'Customer not home';
+
+  static const _reasons = [
+    'Customer not home',
+    'Customer not responding',
+    'Address not found',
+    'Gate locked / no access',
+    'Other',
+  ];
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      title: Text('Mark Visit Failed', style: GoogleFonts.poppins(fontWeight: FontWeight.w700, fontSize: 16, color: AppColors.text)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Select reason:', style: GoogleFonts.poppins(fontSize: 12, color: AppColors.textMuted, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 10),
+          ..._reasons.map((r) => GestureDetector(
+            onTap: () => setState(() => _selected = r),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: _selected == r ? AppColors.error.withOpacity(0.08) : AppColors.bgSubtle,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _selected == r ? AppColors.error.withOpacity(0.4) : AppColors.border),
+              ),
+              child: Text(r, style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w500,
+                color: _selected == r ? AppColors.error : AppColors.text2)),
+            ),
+          )),
+          if (_selected == 'Other') ...[
+            TextField(
+              controller: _ctrl,
+              style: GoogleFonts.poppins(fontSize: 13, color: AppColors.text2),
+              decoration: const InputDecoration(hintText: 'Describe the issue...'),
+            ),
+          ],
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: Text('Cancel', style: GoogleFonts.poppins(color: AppColors.textMuted)),
+        ),
+        TextButton(
+          onPressed: () {
+            final reason = _selected == 'Other' ? _ctrl.text.trim() : _selected;
+            if (reason.isEmpty) return;
+            Navigator.pop(context, reason);
+          },
+          child: Text('Confirm', style: GoogleFonts.poppins(fontWeight: FontWeight.w700, color: AppColors.error)),
+        ),
+      ],
     );
   }
 }

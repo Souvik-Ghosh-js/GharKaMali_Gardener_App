@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -267,14 +268,17 @@ class InfoRow extends StatelessWidget {
 void showAppToast(BuildContext context, String message, {bool isError = false, bool isSuccess = false}) {
   final overlay = Overlay.of(context);
   late OverlayEntry entry;
+  bool removed = false;
   entry = OverlayEntry(builder: (_) => _ToastWidget(
     message: message, isError: isError, isSuccess: isSuccess,
-    onDismiss: () => entry.remove(),
+    onDismiss: () {
+      if (!removed && entry.mounted) {
+        removed = true;
+        entry.remove();
+      }
+    },
   ));
   overlay.insert(entry);
-  Future.delayed(const Duration(seconds: 3), () {
-    if (entry.mounted) entry.remove();
-  });
 }
 
 class _ToastWidget extends StatefulWidget {
@@ -288,6 +292,7 @@ class _ToastWidgetState extends State<_ToastWidget> with SingleTickerProviderSta
   late AnimationController _c;
   late Animation<Offset> _slide;
   late Animation<double> _fade;
+  Timer? _timer;
   @override
   void initState() {
     super.initState();
@@ -296,11 +301,18 @@ class _ToastWidgetState extends State<_ToastWidget> with SingleTickerProviderSta
         .animate(CurvedAnimation(parent: _c, curve: Curves.elasticOut));
     _fade = Tween<double>(begin: 0, end: 1).animate(CurvedAnimation(parent: _c, curve: Curves.easeOut));
     _c.forward();
-    Future.delayed(const Duration(milliseconds: 2500), () async {
-      if (mounted) { await _c.reverse(); widget.onDismiss(); }
+    _timer = Timer(const Duration(milliseconds: 2500), () async {
+      if (mounted) {
+        await _c.reverse();
+        if (mounted) widget.onDismiss();
+      }
     });
   }
-  @override void dispose() { _c.dispose(); super.dispose(); }
+  @override void dispose() {
+    _timer?.cancel();
+    _c.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

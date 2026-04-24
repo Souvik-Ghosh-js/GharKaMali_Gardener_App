@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 
 const String kApiBase = 'https://gkm.gobt.in/api';
 const String kTokenKey = 'gkm_gardener_token';
@@ -47,6 +49,7 @@ class ApiService {
     }
     final headers = await _headers(auth: auth);
 
+    if (kDebugMode) print('🚀 [API] $method $path | Body: $body | Query: $query');
     http.Response res;
     try {
       switch (method) {
@@ -66,6 +69,8 @@ class ApiService {
       throw ApiException('Request timed out. Please try again.', 0);
     }
 
+    if (kDebugMode) print('✅ [RES] $path | Status: ${res.statusCode}\n${_prettyJson(res.body)}');
+
     Map<String, dynamic> json = {};
     try { json = jsonDecode(res.body); } catch (_) {}
 
@@ -79,7 +84,7 @@ class ApiService {
   Future<dynamic> _multipart(
     String method, String path, {
     required Map<String, String> fields,
-    Map<String, File>? files,
+    Map<String, XFile>? files,
   }) async {
     final headers = await _headers(auth: true, multipart: true);
     final request = http.MultipartRequest(method, Uri.parse('$kApiBase$path'))
@@ -88,11 +93,18 @@ class ApiService {
 
     if (files != null) {
       for (final e in files.entries) {
-        request.files.add(await http.MultipartFile.fromPath(e.key, e.value.path));
+        if (kIsWeb) {
+          final bytes = await e.value.readAsBytes();
+          request.files.add(http.MultipartFile.fromBytes(e.key, bytes, filename: e.value.name));
+        } else {
+          request.files.add(await http.MultipartFile.fromPath(e.key, e.value.path));
+        }
       }
     }
+    if (kDebugMode) print('🚀 [API MULTIPART] $method $path | Fields: $fields | Files: ${files?.keys}');
     final streamed = await request.send().timeout(const Duration(seconds: 30));
     final res = await http.Response.fromStream(streamed);
+    if (kDebugMode) print('✅ [RES MULTIPART] $path | Status: ${res.statusCode}\n${_prettyJson(res.body)}');
     Map<String, dynamic> json = {};
     try { json = jsonDecode(res.body); } catch (_) {}
     if (res.statusCode >= 200 && res.statusCode < 300) return json['data'] ?? json;
@@ -113,7 +125,7 @@ class ApiService {
   Future<Map<String,dynamic>> registerGardener({
     required String name, required String phone,
     String? email, String? bio, int? experienceYears,
-    List<int>? serviceZoneIds, File? profileImage, File? idProof,
+    List<int>? serviceZoneIds, XFile? profileImage, XFile? idProof,
   }) async {
     final fields = <String, String>{'name': name, 'phone': phone};
     if (email != null) fields['email'] = email;
@@ -121,7 +133,7 @@ class ApiService {
     if (experienceYears != null) fields['experience_years'] = '$experienceYears';
     if (serviceZoneIds != null && serviceZoneIds.isNotEmpty)
       fields['service_zone_ids'] = jsonEncode(serviceZoneIds);
-    final files = <String, File>{};
+    final files = <String, XFile>{};
     if (profileImage != null) files['profile_image'] = profileImage;
     if (idProof != null) files['id_proof'] = idProof;
     return await _multipart('POST', '/auth/gardener-register', fields: fields, files: files.isEmpty ? null : files);
@@ -137,12 +149,12 @@ class ApiService {
   Future<Map<String,dynamic>> setAvailability(bool isAvailable) async =>
       await _req('PATCH', '/gardener/availability', body: {'is_available': isAvailable});
 
-  // ── ZONES ─────────────────────────────────────────────────────────────────
+  // ── ZONES / GEOFENCES ────────────────────────────────────────────────────
   Future<List<dynamic>> getZones() async =>
-      await _req('GET', '/zones', auth: false);
+      await _req('GET', '/geofences', auth: false);
 
   // ── JOBS ──────────────────────────────────────────────────────────────────
-  Future<Map<String,dynamic>> getJobs({String? status, String? date, int page = 1, int limit = 20}) async =>
+  Future<dynamic> getJobs({String? status, String? date, int page = 1, int limit = 20}) async =>
       await _req('GET', '/bookings/gardener/jobs', query: {
         if (status != null) 'status': status,
         if (date != null) 'date': date,
@@ -158,12 +170,12 @@ class ApiService {
   Future<Map<String,dynamic>> updateBookingStatus({
     required int bookingId, required String status,
     String? notes, int? extraPlants,
-    File? beforeImage, File? afterImage,
+    XFile? beforeImage, XFile? afterImage,
   }) async {
     final fields = <String,String>{'booking_id': '$bookingId', 'status': status};
     if (notes != null && notes.isNotEmpty) fields['gardener_notes'] = notes;
     if (extraPlants != null && extraPlants > 0) fields['extra_plants'] = '$extraPlants';
-    final files = <String,File>{};
+    final files = <String,XFile>{};
     if (beforeImage != null) files['before_image'] = beforeImage;
     if (afterImage != null) files['after_image'] = afterImage;
     return await _multipart('PUT', '/bookings/status', fields: fields, files: files.isEmpty ? null : files);
@@ -179,6 +191,15 @@ class ApiService {
   Future<Map<String,dynamic>> getEarnings(String period) async =>
       await _req('GET', '/bookings/gardener/earnings', query: {'period': period});
 
-  Future<Map<String,dynamic>> getRewards({int limit = 20}) async =>
+  Future<dynamic> getRewards({int limit = 20}) async =>
       await _req('GET', '/gardener/rewards', query: {'limit': '$limit'});
+
+  String _prettyJson(String body) {
+    try {
+      final object = jsonDecode(body);
+      return const JsonEncoder.withIndent('  ').convert(object);
+    } catch (_) {
+      return body;
+    }
+  }
 }

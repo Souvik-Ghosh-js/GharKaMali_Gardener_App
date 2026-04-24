@@ -118,7 +118,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final zones = (gp['zones'] as List?) ?? [];
     final name = _profile?['name'] ?? user['name'] ?? 'Gardener';
     final phone = _profile?['phone'] ?? user['phone'] ?? '';
-    final avgRating = (gp['avg_rating'] ?? 0) as num;
+    num _toNum(dynamic v) {
+      if (v == null) return 0;
+      if (v is num) return v;
+      return num.tryParse(v.toString()) ?? 0;
+    }
+    final avgRating = _toNum(gp['rating'] ?? gp['avg_rating']);
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -160,7 +165,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               style: GoogleFonts.poppins(fontSize: 20, fontWeight: FontWeight.w800, color: Colors.white)
                           ).animate().fadeIn(),
                           Text('+91 $phone', style: GoogleFonts.poppins(fontSize: 13, color: Colors.white60)),
-                          if (gp['is_approved'] == true) ...[
+                          if ((_profile?['is_approved'] ?? user['is_approved']) == true) ...[
                             const SizedBox(height: 8),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),

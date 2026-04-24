@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -33,9 +34,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       final today = DateTime.now().toIso8601String().split('T')[0];
       final res = await _api.getJobs(date: today, limit: 10);
+      if (kDebugMode) print('🔍 [_loadJobs] Raw res type: ${res.runtimeType} | res: $res');
       final items = res is Map ? (res['items'] ?? res['data'] ?? []) : res;
+      if (kDebugMode) print('🔍 [_loadJobs] Parsed items: $items');
       if (mounted) setState(() { _todayJobs = items is List ? items : []; _loadingJobs = false; });
-    } catch (_) { if (mounted) setState(() => _loadingJobs = false); }
+    } catch (e) { 
+      if (kDebugMode) print('❌ [_loadJobs] Error: $e');
+      if (mounted) setState(() => _loadingJobs = false); 
+    }
   }
 
   Future<void> _loadEarnings() async {
@@ -71,10 +77,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final hour = DateTime.now().hour;
     final greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
     final totals = _earnings?['totals'] as Map<String, dynamic>?;
-    final weeklyTotal = (totals?['total_earnings'] ?? 0.0) as num;
-    final weeklyJobs  = (totals?['total_jobs'] ?? totals?['completed_jobs'] ?? 0) as num;
-    final avgRating   = (gp['avg_rating'] ?? 0.0) as num;
-    final activeJobs  = _todayJobs.where((j) => !['completed','cancelled'].contains(j['status'])).toList();
+    num _toNum(dynamic v) {
+      if (v == null) return 0;
+      if (v is num) return v;
+      return num.tryParse(v.toString()) ?? 0;
+    }
+    final weeklyTotal = _toNum(totals?['total_earnings']);
+    final weeklyJobs  = _toNum(totals?['total_jobs']);
+    final avgRating   = _toNum(gp['rating'] ?? gp['avg_rating']);
+    final activeJobs  = _todayJobs; // Show all jobs for today regardless of status for debugging
+    if (kDebugMode) print('🔍 [Dashboard] todayJobs: ${_todayJobs.length} | activeJobs: ${activeJobs.length}');
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -133,7 +145,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Row(children: [
                   Expanded(child: _StatMini(label: 'Weekly', value: '₹${(weeklyTotal).toStringAsFixed(0)}', icon: Icons.account_balance_wallet_rounded, color: AppColors.gold, dark: true)),
                   const SizedBox(width: 10),
-                  Expanded(child: _StatMini(label: 'Jobs Done', value: '$weeklyJobs', icon: Icons.check_circle_rounded, color: AppColors.success)),
+                  Expanded(child: _StatMini(label: 'Jobs Today', value: '$weeklyJobs', icon: Icons.check_circle_rounded, color: AppColors.success)),
                   const SizedBox(width: 10),
                   Expanded(child: _StatMini(label: 'Rating', value: avgRating > 0 ? avgRating.toStringAsFixed(1) : 'New', icon: Icons.star_rounded, color: const Color(0xFFD4B96A))),
                 ]),
@@ -170,15 +182,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ))
           else
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              sliver: SliverList(delegate: SliverChildBuilderDelegate((ctx, i) {
+          SliverList(delegate: SliverChildBuilderDelegate((ctx, i) {
                 final job = activeJobs[i];
                 return _JobCard(job: job, index: i).animate()
                     .fadeIn(delay: Duration(milliseconds: i * 80), duration: 400.ms)
                     .slideY(begin: 0.15, end: 0, delay: Duration(milliseconds: i * 80), duration: 400.ms, curve: Curves.easeOut);
-              }, childCount: activeJobs.length)),
-            ),
+              }, childCount: activeJobs.length),
+
 
           const SliverToBoxAdapter(child: SizedBox(height: 100)),
         ]),
@@ -223,10 +233,12 @@ class _JobCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (kDebugMode) print('🎨 [_JobCard] Building card for ${job['id']} | status: ${job['status']}');
     final status = job['status'] as String? ?? 'assigned';
     final date = job['scheduled_date'];
-    final formatted = date != null
-        ? DateTime.tryParse(date)?.let((d) => '${_weekday(d.weekday)}, ${d.day} ${_month(d.month)}') ?? date
+    final d = date != null ? DateTime.tryParse(date) : null;
+    final formatted = d != null
+        ? '${_weekday(d.weekday)}, ${d.day} ${_month(d.month)}'
         : 'Today';
 
     return Padding(
@@ -235,7 +247,7 @@ class _JobCard extends StatelessWidget {
         onTap: () => Navigator.push(context, PageRouteBuilder(
                   transitionDuration: const Duration(milliseconds: 380),
                   reverseTransitionDuration: const Duration(milliseconds: 300),
-                  pageBuilder: (_, __, ___) => JobDetailScreen(jobId: (job['id'] as num?)?.toInt() ?? 0),
+                  pageBuilder: (_, __, ___) => JobDetailScreen(jobId: int.tryParse(job['id'].toString()) ?? 0),
                   transitionsBuilder: (_, a, __, child) {
                     final cv = CurvedAnimation(parent: a, curve: Curves.easeOutCubic);
                     return SlideTransition(

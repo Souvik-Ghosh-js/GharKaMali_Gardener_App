@@ -1,5 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show File;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -24,7 +25,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _bioCtrl     = TextEditingController();
   List<dynamic> _zones = [];
   final Set<int> _selectedZones = {};
-  File? _profileImg, _idProof;
+  XFile? _profileImg, _idProof;
 
   @override
   void initState() { super.initState(); _loadZones(); }
@@ -38,7 +39,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _pickImage(bool isProfile) async {
     final f = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
-    if (f != null) setState(() => isProfile ? _profileImg = File(f.path) : _idProof = File(f.path));
+    if (f != null) setState(() => isProfile ? _profileImg = f : _idProof = f);
   }
 
   Future<void> _submit() async {
@@ -98,7 +99,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 shape: BoxShape.circle,
                 color: AppColors.bgSubtle,
                 border: Border.all(color: _profileImg != null ? AppColors.forest : AppColors.border, width: 2),
-                image: _profileImg != null ? DecorationImage(image: FileImage(_profileImg!), fit: BoxFit.cover) : null,
+                image: _profileImg != null 
+                  ? DecorationImage(
+                      image: kIsWeb ? NetworkImage(_profileImg!.path) : FileImage(File(_profileImg!.path)) as ImageProvider, 
+                      fit: BoxFit.cover
+                    ) 
+                  : null,
               ),
               child: _profileImg == null ? const Icon(Icons.add_a_photo_rounded, size: 28, color: AppColors.textFaint) : null,
             ),
@@ -161,7 +167,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   color: AppColors.bgSubtle,
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: _idProof != null ? AppColors.forest : AppColors.border, style: BorderStyle.solid),
-                  image: _idProof != null ? DecorationImage(image: FileImage(_idProof!), fit: BoxFit.cover) : null,
+                  image: _idProof != null 
+                    ? DecorationImage(
+                        image: kIsWeb ? NetworkImage(_idProof!.path) : FileImage(File(_idProof!.path)) as ImageProvider, 
+                        fit: BoxFit.cover
+                      ) 
+                    : null,
                 ),
                 child: _idProof == null ? Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                   const Icon(Icons.upload_file_rounded, size: 22, color: AppColors.textFaint),

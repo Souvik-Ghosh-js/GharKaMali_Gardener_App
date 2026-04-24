@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -17,10 +18,10 @@ class _JobsScreenState extends State<JobsScreen> with SingleTickerProviderStateM
   List<dynamic> _jobs = [];
 
   static const _filters = [
-    _Filter('Today',    null,        'today'),
-    _Filter('Assigned', 'assigned',  null),
-    _Filter('Active',   'en_route',  null),
-    _Filter('Done',     'completed', null),
+    _Filter('Today',    null,                          'today'),
+    _Filter('Assigned', 'assigned',                    null),
+    _Filter('Active',   'en_route,arrived,in_progress', null),
+    _Filter('Done',     'completed',                   null),
   ];
 
   int _filterIdx = 0;
@@ -50,9 +51,11 @@ class _JobsScreenState extends State<JobsScreen> with SingleTickerProviderStateM
         status: f.status,
         date: f.dateMode == 'today' ? today : null,
       );
+      if (kDebugMode) print('🔍 [JobsScreen] Raw res: $res');
       final items = res is Map ? (res['items'] ?? res['data'] ?? []) : res;
       if (mounted) setState(() { _jobs = items is List ? items : []; _loading = false; });
-    } catch (_) {
+    } catch (e) {
+      if (kDebugMode) print('❌ [JobsScreen] Error: $e');
       if (mounted) setState(() => _loading = false);
     }
   }
@@ -164,7 +167,7 @@ class _JobListCard extends StatelessWidget {
         onTap: () => Navigator.push(context, PageRouteBuilder(
                   transitionDuration: const Duration(milliseconds: 380),
                   reverseTransitionDuration: const Duration(milliseconds: 300),
-                  pageBuilder: (_, __, ___) => JobDetailScreen(jobId: (job['id'] as num?)?.toInt() ?? 0),
+                  pageBuilder: (_, __, ___) => JobDetailScreen(jobId: int.tryParse(job['id'].toString()) ?? 0),
                   transitionsBuilder: (_, a, __, child) {
                     final cv = CurvedAnimation(parent: a, curve: Curves.easeOutCubic);
                     return SlideTransition(
