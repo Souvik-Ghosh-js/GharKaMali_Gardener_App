@@ -135,10 +135,14 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
       await _load(quiet: true);
       if (mounted) showAppToast(context, 'OTP verified! Visit started', isSuccess: true);
     } on ApiException catch (e) {
-      setState(() => _acting = false);
-      for (final c in _otpCtrls) c.clear();
-      _otpFocus[0].requestFocus();
-      if (mounted) showAppToast(context, e.message, isError: true);
+      if (mounted) {
+        setState(() => _acting = false);
+        for (final c in _otpCtrls) c.clear();
+        _otpFocus[0].requestFocus();
+        showAppToast(context, e.message, isError: true);
+      }
+    } finally {
+      if (mounted) setState(() => _acting = false);
     }
   }
 

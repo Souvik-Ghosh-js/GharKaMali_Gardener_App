@@ -182,12 +182,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ))
           else
-          SliverList(delegate: SliverChildBuilderDelegate((ctx, i) {
+          SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (ctx, i) {
                 final job = activeJobs[i];
-                return _JobCard(job: job, index: i).animate()
+                return _JobCard(job: job, index: i)
+                    .animate()
                     .fadeIn(delay: Duration(milliseconds: i * 80), duration: 400.ms)
-                    .slideY(begin: 0.15, end: 0, delay: Duration(milliseconds: i * 80), duration: 400.ms, curve: Curves.easeOut);
-              }, childCount: activeJobs.length),
+                    .slideY(
+                      begin: 0.15,
+                      end: 0,
+                      delay: Duration(milliseconds: i * 80),
+                      duration: 400.ms,
+                      curve: Curves.easeOut,
+                    );
+              },
+              childCount: activeJobs.length,
+            ),
+          ),
 
 
           const SliverToBoxAdapter(child: SizedBox(height: 100)),
