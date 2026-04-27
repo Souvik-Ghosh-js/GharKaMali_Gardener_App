@@ -51,7 +51,7 @@ class _EarningsScreenState extends State<EarningsScreen> {
         _loading = false;
       });
     } catch (e) {
-      debugPrint('Error loading earnings: $e');
+
       if (mounted) setState(() => _loading = false);
     }
   }

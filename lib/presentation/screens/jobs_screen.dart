@@ -51,11 +51,11 @@ class _JobsScreenState extends State<JobsScreen> with SingleTickerProviderStateM
         status: f.status,
         date: f.dateMode == 'today' ? today : null,
       );
-      if (kDebugMode) print('🔍 [JobsScreen] Raw res: $res');
+
       final items = res is Map ? (res['items'] ?? res['data'] ?? []) : res;
       if (mounted) setState(() { _jobs = items is List ? items : []; _loading = false; });
     } catch (e) {
-      if (kDebugMode) print('❌ [JobsScreen] Error: $e');
+
       if (mounted) setState(() => _loading = false);
     }
   }

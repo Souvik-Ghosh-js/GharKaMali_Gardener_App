@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../data/services/api_service.dart';
 import '../../data/services/auth_provider.dart';
@@ -15,8 +16,11 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final _api = ApiService();
+  final _picker = ImagePicker();
   Map<String, dynamic>? _profile;
+  List<dynamic> _docs = [];
   bool _loading = true, _editing = false, _saving = false;
+  String? _uploadingDocType;
 
   final _bioCtrl = TextEditingController();
   final _expCtrl = TextEditingController();
@@ -56,6 +60,51 @@ class _ProfileScreenState extends State<ProfileScreen> {
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
+    }
+    // Load documents independently so a failure doesn't break the profile
+    try {
+      final docsRes = await _api.getGardenerDocuments();
+      if (mounted) setState(() => _docs = docsRes is List ? List<dynamic>.from(docsRes) : []);
+    } catch (_) {
+      if (mounted) setState(() => _docs = []);
+    }
+  }
+
+  Future<void> _uploadDoc(String docType) async {
+    final picked = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    if (picked == null || !mounted) return;
+    setState(() => _uploadingDocType = docType);
+    try {
+      await _api.uploadGardenerDocument(docType, picked);
+      final updated = await _api.getGardenerDocuments();
+      if (mounted) setState(() { _docs = (updated as List?) ?? []; _uploadingDocType = null; });
+      if (mounted) showAppToast(context, 'Document uploaded!', isSuccess: true);
+    } on ApiException catch (e) {
+      if (mounted) { setState(() => _uploadingDocType = null); showAppToast(context, e.message, isError: true); }
+    }
+  }
+
+  Future<void> _deleteDoc(int id) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Remove Document', style: GoogleFonts.poppins(fontWeight: FontWeight.w700)),
+        content: Text('Are you sure you want to remove this document?', style: GoogleFonts.poppins(fontSize: 14, color: AppColors.textMuted)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text('Cancel', style: GoogleFonts.poppins(color: AppColors.textMuted))),
+          TextButton(onPressed: () => Navigator.pop(context, true), child: Text('Remove', style: GoogleFonts.poppins(fontWeight: FontWeight.w700, color: AppColors.error))),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _api.deleteGardenerDocument(id);
+      final updated = await _api.getGardenerDocuments();
+      if (mounted) setState(() => _docs = (updated as List?) ?? []);
+      if (mounted) showAppToast(context, 'Document removed', isSuccess: true);
+    } on ApiException catch (e) {
+      if (mounted) showAppToast(context, e.message, isError: true);
     }
   }
 
@@ -421,6 +470,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ],
                     ),
                   ).animate().fadeIn(delay: 150.ms),
+                  const SizedBox(height: 12),
+
+                  // Documents
+                  PremiumCard(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.folder_open_rounded, size: 18, color: AppColors.forest),
+                            const SizedBox(width: 8),
+                            Text('KYC Documents', style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.text)),
+                            const Spacer(),
+                            Text('for verification', style: GoogleFonts.poppins(fontSize: 11, color: AppColors.textFaint)),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        for (final d in <Map<String, Object>>[
+                          {'type': 'aadhaar', 'label': 'Aadhaar Card', 'icon': Icons.credit_card_rounded},
+                          {'type': 'pan', 'label': 'PAN Card', 'icon': Icons.badge_rounded},
+                          {'type': 'passbook', 'label': 'Bank Passbook', 'icon': Icons.account_balance_rounded},
+                          {'type': 'cancelled_cheque', 'label': 'Cancelled Cheque', 'icon': Icons.receipt_long_rounded},
+                        ]) _DocRow(
+                          docType: d['type'] as String,
+                          label: d['label'] as String,
+                          icon: d['icon'] as IconData,
+                          doc: _docs.cast<Map<String,dynamic>>().where((doc) => doc['doc_type'] == d['type']).firstOrNull,
+                          isUploading: _uploadingDocType == d['type'],
+                          onUpload: () => _uploadDoc(d['type'] as String),
+                          onDelete: (id) => _deleteDoc(id),
+                          onPreview: (url, lbl) => _showDocPreview(context, url, lbl),
+                        ),
+                      ],
+                    ),
+                  ).animate().fadeIn(delay: 200.ms),
                   const SizedBox(height: 20),
 
                   // Logout
@@ -450,6 +535,64 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _maskAccount(String acc) {
     if (acc.length < 4) return acc;
     return '•' * (acc.length - 4) + acc.substring(acc.length - 4);
+  }
+
+  void _showDocPreview(BuildContext context, String url, String label) {
+    showDialog(
+      context: context,
+      builder: (_) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 4, 8),
+              child: Row(
+                children: [
+                  Expanded(child: Text(label, style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15))),
+                  IconButton(icon: const Icon(Icons.close_rounded, color: Colors.white70), onPressed: () => Navigator.pop(context)),
+                ],
+              ),
+            ),
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.72),
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 4.0,
+                child: Image.network(
+                  url,
+                  fit: BoxFit.contain,
+                  loadingBuilder: (_, child, progress) => progress == null
+                      ? child
+                      : SizedBox(
+                          height: 200,
+                          child: Center(child: CircularProgressIndicator(
+                            value: progress.expectedTotalBytes != null
+                                ? progress.cumulativeBytesLoaded / progress.expectedTotalBytes!
+                                : null,
+                            color: AppColors.forest,
+                          )),
+                        ),
+                  errorBuilder: (_, __, ___) => const SizedBox(
+                    height: 160,
+                    child: Center(child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.broken_image_rounded, color: Colors.white38, size: 48),
+                        SizedBox(height: 8),
+                        Text('Could not load image', style: TextStyle(color: Colors.white38, fontSize: 13)),
+                      ],
+                    )),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -549,4 +692,143 @@ class _BankRow extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _DocStatusBadge extends StatelessWidget {
+  final String status;
+  const _DocStatusBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final Color bg;
+    final Color fg;
+    final String label;
+    switch (status) {
+      case 'verified':
+        bg = const Color(0xFFD1FAE5); fg = const Color(0xFF065F46); label = 'Verified';
+        break;
+      case 'rejected':
+        bg = const Color(0xFFFEE2E2); fg = const Color(0xFF991B1B); label = 'Rejected';
+        break;
+      default:
+        bg = const Color(0xFFFEF3C7); fg = const Color(0xFF92400E); label = 'Pending Review';
+    }
+    return Container(
+      margin: const EdgeInsets.only(top: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(99)),
+      child: Text(label, style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: fg)),
+    );
+  }
+}
+
+class _DocRow extends StatelessWidget {
+  final String docType;
+  final String label;
+  final IconData icon;
+  final Map<String, dynamic>? doc;
+  final bool isUploading;
+  final VoidCallback onUpload;
+  final void Function(int id) onDelete;
+  final void Function(String url, String label) onPreview;
+
+  const _DocRow({
+    required this.docType,
+    required this.label,
+    required this.icon,
+    required this.doc,
+    required this.isUploading,
+    required this.onUpload,
+    required this.onDelete,
+    required this.onPreview,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final status = doc?['status'] as String? ?? '';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        children: [
+          Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              color: AppColors.forest.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, size: 20, color: AppColors.forest),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.text2)),
+                if (doc != null)
+                  _DocStatusBadge(status: status)
+                else
+                  Text('Not uploaded', style: GoogleFonts.poppins(fontSize: 11, color: AppColors.textFaint)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          if (isUploading)
+            const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.forest))
+          else if (doc != null) ...[
+            GestureDetector(
+              onTap: () => onPreview(doc!['image_url'] as String, label),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  width: 56, height: 56,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Image.network(
+                    doc!['image_url'] as String,
+                    width: 56, height: 56,
+                    fit: BoxFit.cover,
+                    loadingBuilder: (_, child, progress) => progress == null
+                        ? child
+                        : const Center(child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+                    errorBuilder: (_, __, ___) => Container(
+                      color: AppColors.bg,
+                      child: const Icon(Icons.broken_image_rounded, size: 22, color: AppColors.textMuted),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  onTap: () => onPreview(doc!['image_url'] as String, label),
+                  child: const Icon(Icons.zoom_in_rounded, size: 20, color: AppColors.forest),
+                ),
+                const SizedBox(height: 6),
+                GestureDetector(
+                  onTap: () => onDelete(doc!['id'] as int),
+                  child: const Icon(Icons.delete_outline_rounded, size: 20, color: AppColors.error),
+                ),
+              ],
+            ),
+          ] else
+            GestureDetector(
+              onTap: onUpload,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                decoration: BoxDecoration(
+                  border: Border.all(color: AppColors.forest, width: 1.5),
+                  borderRadius: BorderRadius.circular(99),
+                ),
+                child: Text('Upload', style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.forest)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }

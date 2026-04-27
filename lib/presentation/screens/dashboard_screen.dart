@@ -34,12 +34,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       final today = DateTime.now().toIso8601String().split('T')[0];
       final res = await _api.getJobs(date: today, limit: 10);
-      if (kDebugMode) print('🔍 [_loadJobs] Raw res type: ${res.runtimeType} | res: $res');
+
       final items = res is Map ? (res['items'] ?? res['data'] ?? []) : res;
-      if (kDebugMode) print('🔍 [_loadJobs] Parsed items: $items');
+
       if (mounted) setState(() { _todayJobs = items is List ? items : []; _loadingJobs = false; });
     } catch (e) { 
-      if (kDebugMode) print('❌ [_loadJobs] Error: $e');
+
       if (mounted) setState(() => _loadingJobs = false); 
     }
   }
@@ -86,7 +86,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final weeklyJobs  = _toNum(totals?['total_jobs']);
     final avgRating   = _toNum(gp['rating'] ?? gp['avg_rating']);
     final activeJobs  = _todayJobs; // Show all jobs for today regardless of status for debugging
-    if (kDebugMode) print('🔍 [Dashboard] todayJobs: ${_todayJobs.length} | activeJobs: ${activeJobs.length}');
+
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -245,7 +245,7 @@ class _JobCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (kDebugMode) print('🎨 [_JobCard] Building card for ${job['id']} | status: ${job['status']}');
+
     final status = job['status'] as String? ?? 'assigned';
     final date = job['scheduled_date'];
     final d = date != null ? DateTime.tryParse(date) : null;

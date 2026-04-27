@@ -49,7 +49,7 @@ class ApiService {
     }
     final headers = await _headers(auth: auth);
 
-    if (kDebugMode) print('🚀 [API] $method $path | Body: $body | Query: $query');
+    if (kDebugMode && path.contains('/gardener/profile')) print('🚀 [API] $method $path | Body: $body | Query: $query');
     http.Response res;
     try {
       switch (method) {
@@ -69,7 +69,7 @@ class ApiService {
       throw ApiException('Request timed out. Please try again.', 0);
     }
 
-    if (kDebugMode) print('✅ [RES] $path | Status: ${res.statusCode}\n${_prettyJson(res.body)}');
+    if (kDebugMode && path.contains('/gardener/profile')) print('✅ [RES] $path | Status: ${res.statusCode}\n${_prettyJson(res.body)}');
 
     Map<String, dynamic> json = {};
     try { json = jsonDecode(res.body); } catch (_) {}
@@ -101,10 +101,10 @@ class ApiService {
         }
       }
     }
-    if (kDebugMode) print('🚀 [API MULTIPART] $method $path | Fields: $fields | Files: ${files?.keys}');
+    if (kDebugMode && path.contains('/gardener/profile')) print('🚀 [API MULTIPART] $method $path | Fields: $fields | Files: ${files?.keys}');
     final streamed = await request.send().timeout(const Duration(seconds: 30));
     final res = await http.Response.fromStream(streamed);
-    if (kDebugMode) print('✅ [RES MULTIPART] $path | Status: ${res.statusCode}\n${_prettyJson(res.body)}');
+    if (kDebugMode && path.contains('/gardener/profile')) print('✅ [RES MULTIPART] $path | Status: ${res.statusCode}\n${_prettyJson(res.body)}');
     Map<String, dynamic> json = {};
     try { json = jsonDecode(res.body); } catch (_) {}
     if (res.statusCode >= 200 && res.statusCode < 300) return json['data'] ?? json;
@@ -186,6 +186,17 @@ class ApiService {
         'latitude': lat, 'longitude': lng,
         if (bookingId != null) 'booking_id': bookingId,
       });
+
+  // ── DOCUMENTS ─────────────────────────────────────────────────────────────
+  Future<List<dynamic>> getGardenerDocuments() async =>
+      await _req('GET', '/gardener/documents');
+
+  Future<dynamic> uploadGardenerDocument(String docType, XFile file) async =>
+      await _multipart('POST', '/gardener/documents',
+          fields: {'doc_type': docType}, files: {'document': file});
+
+  Future<void> deleteGardenerDocument(int id) async =>
+      await _req('DELETE', '/gardener/documents/$id');
 
   // ── EARNINGS ──────────────────────────────────────────────────────────────
   Future<Map<String,dynamic>> getEarnings(String period) async =>
