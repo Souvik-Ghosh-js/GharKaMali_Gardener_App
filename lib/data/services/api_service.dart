@@ -171,10 +171,12 @@ class ApiService {
     required int bookingId, required String status,
     String? notes, int? extraPlants,
     XFile? beforeImage, XFile? afterImage,
+    List<String>? checklistDone,
   }) async {
     final fields = <String,String>{'booking_id': '$bookingId', 'status': status};
     if (notes != null && notes.isNotEmpty) fields['gardener_notes'] = notes;
     if (extraPlants != null && extraPlants > 0) fields['extra_plants'] = '$extraPlants';
+    if (checklistDone != null && checklistDone.isNotEmpty) fields['checklist_done'] = jsonEncode(checklistDone);
     final files = <String,XFile>{};
     if (beforeImage != null) files['before_image'] = beforeImage;
     if (afterImage != null) files['after_image'] = afterImage;

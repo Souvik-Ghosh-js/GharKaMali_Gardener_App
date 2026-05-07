@@ -29,6 +29,16 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   final _notesCtrl = TextEditingController();
   int _extraPlants = 0;
 
+  static const _checklistItems = [
+    'Watering done',
+    'Weeding done',
+    'Pruning / trimming done',
+    'Fertilizer applied',
+    'Pest check done',
+    'Garden cleaned up',
+  ];
+  late final List<bool> _checklist = List.filled(_checklistItems.length, false);
+
   String get _status => _job?['status'] as String? ?? '';
 
   @override
@@ -147,13 +157,22 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   }
 
   Future<void> _completeJob() async {
+    if (_beforeImg == null || _afterImg == null) {
+      showAppToast(context, 'Please take both before and after photos', isError: true);
+      return;
+    }
     setState(() => _acting = true);
+    final completedTasks = <String>[];
+    for (int i = 0; i < _checklistItems.length; i++) {
+      if (_checklist[i]) completedTasks.add(_checklistItems[i]);
+    }
     try {
       await _api.updateBookingStatus(
         bookingId: widget.jobId, status: 'completed',
         notes: _notesCtrl.text.isNotEmpty ? _notesCtrl.text : null,
         extraPlants: _extraPlants > 0 ? _extraPlants : null,
         beforeImage: _beforeImg, afterImage: _afterImg,
+        checklistDone: completedTasks,
       );
       await _load(quiet: true);
       if (mounted) showAppToast(context, 'Job completed! Excellent work', isSuccess: true);
@@ -414,6 +433,35 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
           const SizedBox(width: 12),
           Expanded(child: _PhotoTile(label: 'After', file: _afterImg, onTap: () => _pickImage(false))),
         ]),
+        const SizedBox(height: 16),
+        // Checklist
+        Text('TASKS COMPLETED', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
+        const SizedBox(height: 8),
+        ...List.generate(_checklistItems.length, (i) => GestureDetector(
+          onTap: () => setState(() => _checklist[i] = !_checklist[i]),
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: _checklist[i] ? AppColors.success.withOpacity(0.07) : AppColors.bgSubtle,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _checklist[i] ? AppColors.success.withOpacity(0.4) : AppColors.border),
+            ),
+            child: Row(children: [
+              Icon(
+                _checklist[i] ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                size: 20,
+                color: _checklist[i] ? AppColors.success : AppColors.textFaint,
+              ),
+              const SizedBox(width: 10),
+              Text(_checklistItems[i], style: GoogleFonts.poppins(
+                fontSize: 13,
+                fontWeight: _checklist[i] ? FontWeight.w600 : FontWeight.w400,
+                color: _checklist[i] ? AppColors.success : AppColors.text2,
+              )),
+            ]),
+          ),
+        )),
         const SizedBox(height: 16),
         // Extra plants
         Text('EXTRA PLANTS SERVICED', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
