@@ -22,7 +22,10 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   final _picker = ImagePicker();
   Map<String, dynamic>? _job;
   bool _loading = true, _acting = false;
-  Timer? _locTimer, _refreshTimer;
+  Timer? _locTimer, _refreshTimer, _tickTimer;
+  // Wall-clock tick to drive the visit countdown. Rebuilds every second only
+  // when a visit is in_progress; cancelled otherwise.
+  DateTime _now = DateTime.now();
   final _otpCtrls = List.generate(4, (_) => TextEditingController());
   final _otpFocus  = List.generate(4, (_) => FocusNode());
   XFile? _beforeImg, _afterImg;
@@ -52,10 +55,44 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   void dispose() {
     _locTimer?.cancel();
     _refreshTimer?.cancel();
+    _tickTimer?.cancel();
     for (final c in _otpCtrls) c.dispose();
     for (final f in _otpFocus) f.dispose();
     _notesCtrl.dispose();
     super.dispose();
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Visit countdown — starts ticking when status is `in_progress` (OTP verified).
+  // Reads zone-configured `ondemand_visit_minutes` from the booking's geofence,
+  // adds any customer-purchased `extra_time_minutes`. Falls back to 60 min.
+  // ───────────────────────────────────────────────────────────────────────────
+  void _manageTickTimer() {
+    if (_status == 'in_progress' && _tickTimer == null) {
+      _tickTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!mounted) return;
+        setState(() => _now = DateTime.now());
+      });
+    } else if (_status != 'in_progress' && _tickTimer != null) {
+      _tickTimer?.cancel();
+      _tickTimer = null;
+    }
+  }
+
+  DateTime? get _visitStartedAt {
+    final raw = _job?['started_at'] ?? _job?['otp_verified_at'];
+    if (raw is String && raw.isNotEmpty) return DateTime.tryParse(raw)?.toLocal();
+    return null;
+  }
+
+  int get _visitAllowedMinutes {
+    final gf = _job?['geofenceRef'];
+    int base = 60;
+    if (gf is Map && gf['visit_minutes'] != null) {
+      base = int.tryParse(gf['visit_minutes'].toString()) ?? 60;
+    }
+    final extra = int.tryParse((_job?['extra_time_minutes'] ?? 0).toString()) ?? 0;
+    return base + extra;
   }
 
   Future<void> _load({bool quiet = false}) async {
@@ -64,6 +101,7 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
       final res = await _api.getJobDetail(widget.jobId);
       if (mounted) setState(() { _job = res is Map<String,dynamic> ? res : {}; _loading = false; });
       _manageLocation();
+      _manageTickTimer();
     } catch (_) {
       if (mounted && !quiet) setState(() => _loading = false);
     }
@@ -308,6 +346,12 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
               const SizedBox(height: 12),
             ],
 
+            // ── VISIT COUNTDOWN TIMER ────────────────────────────────────
+            if (_status == 'in_progress') ...[
+              _buildVisitTimer(),
+              const SizedBox(height: 12),
+            ],
+
             // ── COMPLETE JOB FORM ────────────────────────────────────────
             if (_status == 'in_progress') ...[
               _buildCompleteForm(),
@@ -360,6 +404,83 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
             ],
           ])),
         ),
+      ]),
+    );
+  }
+
+  Widget _buildVisitTimer() {
+    final startedAt = _visitStartedAt;
+    final allowedMinutes = _visitAllowedMinutes;
+    final elapsed = startedAt == null ? Duration.zero : _now.difference(startedAt);
+    final total = Duration(minutes: allowedMinutes);
+    final remaining = total - elapsed;
+    final overtime = remaining.isNegative;
+    final progress = startedAt == null
+        ? 0.0
+        : (elapsed.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0);
+
+    Duration display = overtime ? -remaining : (remaining.isNegative ? Duration.zero : remaining);
+    final mm = display.inMinutes.toString().padLeft(2, '0');
+    final ss = (display.inSeconds % 60).toString().padLeft(2, '0');
+
+    final accent = overtime
+        ? AppColors.error
+        : (remaining.inMinutes < 10 ? AppColors.warning : AppColors.success);
+
+    final extraMinutes = int.tryParse((_job?['extra_time_minutes'] ?? 0).toString()) ?? 0;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(colors: [accent.withOpacity(0.10), accent.withOpacity(0.02)]),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: accent.withOpacity(0.30)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(overtime ? Icons.alarm_rounded : Icons.timer_rounded, color: accent, size: 18),
+          const SizedBox(width: 8),
+          Text(overtime ? 'OVERTIME' : 'VISIT TIMER',
+              style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: accent, letterSpacing: 1)),
+          const Spacer(),
+          Text('Allowed: ${allowedMinutes} min',
+              style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.textMuted)),
+        ]),
+        const SizedBox(height: 12),
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text(overtime ? '+$mm:$ss' : '$mm:$ss',
+              style: GoogleFonts.poppins(fontSize: 42, fontWeight: FontWeight.w900, color: accent, height: 1, letterSpacing: -1)),
+          const SizedBox(width: 8),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(overtime ? 'over' : 'remaining',
+                style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.text2)),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(99),
+          child: LinearProgressIndicator(
+            value: progress,
+            minHeight: 6,
+            backgroundColor: accent.withOpacity(0.12),
+            valueColor: AlwaysStoppedAnimation<Color>(accent),
+          ),
+        ),
+        if (extraMinutes > 0) ...[
+          const SizedBox(height: 10),
+          Row(children: [
+            const Icon(Icons.add_circle_outline_rounded, size: 13, color: AppColors.forest),
+            const SizedBox(width: 6),
+            Text('Customer added $extraMinutes min',
+                style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.forest)),
+          ]),
+        ],
+        if (startedAt != null) ...[
+          const SizedBox(height: 6),
+          Text('Started at ${TimeOfDay.fromDateTime(startedAt).format(context)}',
+              style: GoogleFonts.poppins(fontSize: 11, color: AppColors.textMuted)),
+        ],
       ]),
     );
   }
