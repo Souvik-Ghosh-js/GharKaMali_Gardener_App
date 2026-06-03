@@ -55,8 +55,17 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _loading = true);
     try {
       final res = await _api.gardenerLogin(phone, otp);
+      final token = (res is Map ? res['token'] : null)?.toString() ?? '';
+      final user = res is Map ? (res['user'] ?? res) : null;
+      if (token.isEmpty || user is! Map) {
+        setState(() => _loading = false);
+        for (final c in _otpCtrls) c.clear();
+        _otpFocus[0].requestFocus();
+        if (mounted) showAppToast(context, 'Login failed — please try again or contact support.', isError: true);
+        return;
+      }
       final auth = context.read<AuthProvider>();
-      await auth.login(res['user'] ?? res, res['token'] ?? '');
+      await auth.login(Map<String, dynamic>.from(user), token);
       if (mounted) widget.onLoggedIn();
     } on ApiException catch (e) {
       setState(() => _loading = false);
