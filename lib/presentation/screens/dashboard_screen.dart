@@ -145,7 +145,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Row(children: [
                   Expanded(child: _StatMini(label: 'Weekly', value: '₹${(weeklyTotal).toStringAsFixed(0)}', icon: Icons.account_balance_wallet_rounded, color: AppColors.gold, dark: true)),
                   const SizedBox(width: 10),
-                  Expanded(child: _StatMini(label: 'Jobs Today', value: '$weeklyJobs', icon: Icons.check_circle_rounded, color: AppColors.success)),
+                  Expanded(child: _StatMini(label: 'Jobs Today', value: '${_todayJobs.length}', icon: Icons.check_circle_rounded, color: AppColors.success)),
                   const SizedBox(width: 10),
                   Expanded(child: _StatMini(label: 'Rating', value: avgRating > 0 ? avgRating.toStringAsFixed(1) : 'New', icon: Icons.star_rounded, color: const Color(0xFFD4B96A))),
                 ]),
