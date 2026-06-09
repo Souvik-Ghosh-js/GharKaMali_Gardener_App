@@ -157,13 +157,14 @@ class _SplashScreen extends StatelessWidget {
       backgroundColor: AppColors.forest,
       body: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
         Container(
-          width: 88, height: 88,
+          width: 120, height: 120,
+          padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: AppColors.gold.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(26),
+            borderRadius: BorderRadius.circular(30),
             border: Border.all(color: AppColors.gold.withOpacity(0.25), width: 1.5),
           ),
-          child: const Icon(Icons.eco_rounded, color: AppColors.gold, size: 44),
+          child: Image.asset('assets/images/logo.png', fit: BoxFit.contain),
         ).animate().scale(begin: const Offset(0.6, 0.6), end: const Offset(1, 1), curve: Curves.elasticOut, duration: 700.ms),
         const SizedBox(height: 22),
         Text('GKM Gardener',
