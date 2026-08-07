@@ -122,6 +122,9 @@ class ApiService {
         if (fcmToken != null) 'fcm_token': fcmToken,
       });
 
+  Future<void> updateFcmToken(String token) async =>
+      await _req('POST', '/auth/update-fcm-token', body: {'fcm_token': token});
+
   Future<Map<String,dynamic>> registerGardener({
     required String name, required String phone,
     String? email, String? bio, int? experienceYears,

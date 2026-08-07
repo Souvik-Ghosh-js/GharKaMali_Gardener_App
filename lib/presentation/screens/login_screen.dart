@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import '../../data/services/api_service.dart';
 import '../../data/services/auth_provider.dart';
+import '../../data/services/push_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
 
@@ -54,7 +55,8 @@ class _LoginScreenState extends State<LoginScreen> {
     final phone = _phoneCtrl.text.replaceAll(RegExp(r'\D'), '');
     setState(() => _loading = true);
     try {
-      final res = await _api.gardenerLogin(phone, otp);
+      final fcmToken = await PushService.instance.getToken();
+      final res = await _api.gardenerLogin(phone, otp, fcmToken: fcmToken);
       final token = (res is Map ? res['token'] : null)?.toString() ?? '';
       final user = res is Map ? (res['user'] ?? res) : null;
       if (token.isEmpty || user is! Map) {
