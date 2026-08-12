@@ -124,22 +124,10 @@ class _LoginScreenState extends State<LoginScreen> {
               SafeArea(child: Padding(
                 padding: const EdgeInsets.fromLTRB(28, 28, 28, 0),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
-                    Container(
-                      width: 44, height: 44,
-                      decoration: BoxDecoration(
-                        color: AppColors.gold.withOpacity(0.15),
-                        borderRadius: BorderRadius.circular(13),
-                        border: Border.all(color: AppColors.gold.withOpacity(0.3)),
-                      ),
-                      child: const Icon(Icons.eco_rounded, color: AppColors.gold, size: 24),
-                    ),
-                    const SizedBox(width: 12),
-                    Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('GKM Gardener', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w800, color: Colors.white)),
-                      Text('Ghar Ka Mali', style: GoogleFonts.poppins(fontSize: 11, color: Colors.white54)),
-                    ]),
-                  ]),
+                  Image.asset(
+                    'assets/images/logo.png',
+                    height: 50,
+                  ),
                   const SizedBox(height: 32),
                   Text(
                     _step == 'phone' ? 'Welcome Back!' : 'Enter OTP',
