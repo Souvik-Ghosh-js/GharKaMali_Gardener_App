@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'data/services/auth_provider.dart';
+import 'data/services/push_service.dart';
 import 'presentation/theme/app_theme.dart';
 import 'presentation/screens/login_screen.dart';
 import 'presentation/screens/register_screen.dart';
@@ -25,6 +26,8 @@ void main() {
   ));
   Animate.restartOnHotReload = true;
   runApp(const GkmGardenerApp());
+  // Push notifications — safe no-op when Firebase isn't configured.
+  PushService.instance.init().then((_) => PushService.instance.syncTokenIfLoggedIn());
 }
 
 class GkmGardenerApp extends StatelessWidget {
@@ -35,6 +38,7 @@ class GkmGardenerApp extends StatelessWidget {
       create: (_) => AuthProvider(),
       child: MaterialApp(
         title: 'GKM Gardener',
+        navigatorKey: gkmNavigatorKey,
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light,
         home: const _RootGate(),
@@ -115,6 +119,20 @@ class _HomeShell extends StatefulWidget {
 }
 class _HomeShellState extends State<_HomeShell> {
   int _idx = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    // Notification taps for job alerts land on the Jobs tab.
+    PushService.instance.onOpenJobs = () { if (mounted) setState(() => _idx = 1); };
+    WidgetsBinding.instance.addPostFrameCallback((_) => PushService.instance.flushPendingTap());
+  }
+
+  @override
+  void dispose() {
+    PushService.instance.onOpenJobs = null;
+    super.dispose();
+  }
 
   void _onLoggedOut() {
     context.read<AuthProvider>().logout().then((_) {
