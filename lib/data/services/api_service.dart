@@ -175,11 +175,14 @@ class ApiService {
     String? notes, int? extraPlants,
     XFile? beforeImage, XFile? afterImage,
     List<String>? checklistDone,
+    double? latitude, double? longitude,
   }) async {
     final fields = <String,String>{'booking_id': '$bookingId', 'status': status};
     if (notes != null && notes.isNotEmpty) fields['gardener_notes'] = notes;
     if (extraPlants != null && extraPlants > 0) fields['extra_plants'] = '$extraPlants';
     if (checklistDone != null && checklistDone.isNotEmpty) fields['checklist_done'] = jsonEncode(checklistDone);
+    if (latitude != null) fields['latitude'] = '$latitude';
+    if (longitude != null) fields['longitude'] = '$longitude';
     final files = <String,XFile>{};
     if (beforeImage != null) files['before_image'] = beforeImage;
     if (afterImage != null) files['after_image'] = afterImage;
@@ -209,6 +212,113 @@ class ApiService {
 
   Future<dynamic> getRewards({int limit = 20}) async =>
       await _req('GET', '/gardener/rewards', query: {'limit': '$limit'});
+
+  // ── VISIT REPORT (checklist / photos / health / materials) ────────────────
+  /// Zone-agnostic task checklist. [serviceType] is 'ondemand' or 'subscription'.
+  /// Handles both { items: [...] } and a bare array response defensively.
+  Future<List<Map<String,dynamic>>> getChecklist(String serviceType) async {
+    final res = await _req('GET', '/gardener/checklist', query: {'service_type': serviceType});
+    final list = res is List ? res : (res is Map ? (res['items'] ?? []) : []);
+    return list is List
+        ? list.whereType<Map>().map((e) => Map<String,dynamic>.from(e)).toList()
+        : <Map<String,dynamic>>[];
+  }
+
+  /// Uploads one visit photo. [type] is 'before' | 'after' | 'problem' | 'health'.
+  Future<Map<String,dynamic>> uploadVisitPhoto({
+    required int bookingId, required XFile photo, required String type,
+    double? latitude, double? longitude,
+  }) async {
+    final fields = <String,String>{'type': type};
+    if (latitude != null) fields['latitude'] = '$latitude';
+    if (longitude != null) fields['longitude'] = '$longitude';
+    final res = await _multipart('POST', '/gardener/visits/$bookingId/photos',
+        fields: fields, files: {'photo': photo});
+    return res is Map<String,dynamic> ? res : {};
+  }
+
+  Future<Map<String,dynamic>> getVisitReport(int bookingId) async {
+    final res = await _req('GET', '/gardener/visits/$bookingId/report');
+    return res is Map<String,dynamic> ? res : {};
+  }
+
+  Future<dynamic> submitHealthReport(int bookingId, {
+    required List<String> conditions, String? remarks, String? photoUrl,
+  }) async =>
+      await _req('POST', '/gardener/visits/$bookingId/health', body: {
+        'conditions': conditions,
+        if (remarks != null && remarks.isNotEmpty) 'remarks': remarks,
+        if (photoUrl != null && photoUrl.isNotEmpty) 'photo_url': photoUrl,
+      });
+
+  Future<dynamic> submitMaterials(int bookingId, List<Map<String,dynamic>> items) async =>
+      await _req('POST', '/gardener/visits/$bookingId/materials', body: {'items': items});
+
+  // ── LEADS / ESCALATIONS ───────────────────────────────────────────────────
+  Future<dynamic> createLead({int? bookingId, required String type, required String note}) async =>
+      await _req('POST', '/gardener/leads', body: {
+        if (bookingId != null) 'booking_id': bookingId,
+        'type': type, 'note': note,
+      });
+
+  Future<List<dynamic>> getLeads() async {
+    final res = await _req('GET', '/gardener/leads');
+    final list = res is List ? res : (res is Map ? (res['items'] ?? res['leads'] ?? []) : []);
+    return list is List ? list : [];
+  }
+
+  Future<dynamic> createEscalation({
+    int? bookingId, required String type, required String note, XFile? photo,
+  }) async {
+    final fields = <String,String>{'type': type, 'note': note};
+    if (bookingId != null) fields['booking_id'] = '$bookingId';
+    return await _multipart('POST', '/gardener/escalations',
+        fields: fields, files: photo != null ? {'photo': photo} : null);
+  }
+
+  // ── ATTENDANCE / LEAVES ───────────────────────────────────────────────────
+  Future<dynamic> attendanceCheckIn({double? latitude, double? longitude}) async =>
+      await _req('POST', '/gardener/attendance/checkin', body: {
+        if (latitude != null) 'latitude': latitude,
+        if (longitude != null) 'longitude': longitude,
+      });
+
+  Future<dynamic> attendanceCheckOut() async =>
+      await _req('POST', '/gardener/attendance/checkout', body: {});
+
+  Future<dynamic> getAttendanceToday() async =>
+      await _req('GET', '/gardener/attendance/today');
+
+  /// [month] is 'YYYY-MM'. Returns { rows, summary: {days_present, total_hours} }.
+  Future<Map<String,dynamic>> getAttendanceMonth(String month) async {
+    final res = await _req('GET', '/gardener/attendance', query: {'month': month});
+    return res is Map<String,dynamic> ? res : {};
+  }
+
+  Future<dynamic> requestLeave({required String fromDate, required String toDate, required String reason}) async =>
+      await _req('POST', '/gardener/leaves', body: {
+        'from_date': fromDate, 'to_date': toDate, 'reason': reason,
+      });
+
+  Future<List<dynamic>> getLeaves() async {
+    final res = await _req('GET', '/gardener/leaves');
+    final list = res is List ? res : (res is Map ? (res['items'] ?? res['leaves'] ?? []) : []);
+    return list is List ? list : [];
+  }
+
+  // ── SUPERVISOR / NOTIFICATIONS ────────────────────────────────────────────
+  /// Returns { name, phone } or null when no supervisor is assigned.
+  Future<Map<String,dynamic>?> getSupervisor() async {
+    final res = await _req('GET', '/gardener/supervisor');
+    if (res is Map<String,dynamic> && (res['phone'] != null || res['name'] != null)) return res;
+    return null;
+  }
+
+  Future<List<dynamic>> getNotifications() async {
+    final res = await _req('GET', '/notifications');
+    final list = res is List ? res : (res is Map ? (res['items'] ?? res['notifications'] ?? []) : []);
+    return list is List ? list : [];
+  }
 
   String _prettyJson(String body) {
     try {

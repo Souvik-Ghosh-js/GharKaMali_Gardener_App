@@ -11,6 +11,32 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../data/services/api_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common_widgets.dart';
+import 'leads_screen.dart' show kLeadTypeLabels;
+
+/// Human-readable labels for plant-health conditions accepted by the backend.
+const Map<String, String> kHealthConditionLabels = {
+  'healthy': 'Healthy',
+  'needs_attention': 'Needs Attention',
+  'pest_attack': 'Pest Attack',
+  'overwatering': 'Overwatering',
+  'underwatering': 'Underwatering',
+  'yellow_leaves': 'Yellow Leaves',
+  'root_problem': 'Root Problem',
+  'fungus': 'Fungus',
+  'plant_dying': 'Plant Dying',
+  'repotting_required': 'Repotting Required',
+};
+
+/// Human-readable labels for escalation types accepted by the backend.
+const Map<String, String> kEscalationTypeLabels = {
+  'customer_unavailable': 'Customer Unavailable',
+  'access_problem': 'Access Problem',
+  'plant_emergency': 'Plant Emergency',
+  'accident_damage': 'Accident / Damage',
+  'material_required': 'Material Required',
+  'customer_complaint': 'Customer Complaint',
+  'need_assistance': 'Need Assistance',
+};
 
 class JobDetailScreen extends StatefulWidget {
   final int jobId;
@@ -28,19 +54,35 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   DateTime _now = DateTime.now();
   final _otpCtrls = List.generate(4, (_) => TextEditingController());
   final _otpFocus  = List.generate(4, (_) => FocusNode());
-  XFile? _beforeImg, _afterImg;
   final _notesCtrl = TextEditingController();
   int _extraPlants = 0;
 
-  static const _checklistItems = [
-    'Watering done',
-    'Weeding done',
-    'Pruning / trimming done',
-    'Fertilizer applied',
-    'Pest check done',
-    'Garden cleaned up',
+  // ── Visit report state ─────────────────────────────────────────────────────
+  List<Map<String, dynamic>> _checklistItems = [];
+  bool _checklistLoading = false, _checklistLoaded = false;
+  final Set<String> _checklistDone = {};
+
+  /// Uploaded visit photos grouped by type ('before' | 'after' | 'problem').
+  Map<String, List<Map<String, dynamic>>> _photos = {};
+  /// Photos taken but not (yet) uploaded — uploading or failed (tap to retry).
+  final List<_PendingPhoto> _pending = [];
+  bool _reportLoading = false;
+  Map<String, dynamic>? _report;
+
+  // Supervisor is the same for every job — fetch once per app session.
+  static Map<String, dynamic>? _supervisorCache;
+  static bool _supervisorFetched = false;
+  Map<String, dynamic>? _supervisor;
+
+  // Fallback when GET /gardener/checklist is unreachable.
+  static const _fallbackChecklist = [
+    {'key': 'watering', 'label': 'Watering done', 'required': false},
+    {'key': 'weeding', 'label': 'Weeding done', 'required': false},
+    {'key': 'pruning', 'label': 'Pruning / trimming done', 'required': false},
+    {'key': 'fertilizer', 'label': 'Fertilizer applied', 'required': false},
+    {'key': 'pest_check', 'label': 'Pest check done', 'required': false},
+    {'key': 'cleanup', 'label': 'Garden cleaned up', 'required': false},
   ];
-  late final List<bool> _checklist = List.filled(_checklistItems.length, false);
 
   String get _status => _job?['status'] as String? ?? '';
 
@@ -48,6 +90,7 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   void initState() {
     super.initState();
     _load();
+    _loadSupervisor();
     _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) => _load(quiet: true));
   }
 
@@ -102,8 +145,63 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
       if (mounted) setState(() { _job = res is Map<String,dynamic> ? res : {}; _loading = false; });
       _manageLocation();
       _manageTickTimer();
+      // Once the visit becomes actionable, pull the checklist + report.
+      if (['arrived', 'in_progress'].contains(_status)) {
+        if (!_checklistLoaded && !_checklistLoading) _loadChecklist();
+        if (_report == null && !_reportLoading) _loadReport();
+      }
     } catch (_) {
       if (mounted && !quiet) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadSupervisor() async {
+    if (_supervisorFetched) {
+      _supervisor = _supervisorCache;
+      return;
+    }
+    try {
+      final res = await _api.getSupervisor();
+      _supervisorCache = res;
+      _supervisorFetched = true;
+      if (mounted) setState(() => _supervisor = res);
+    } catch (_) {/* row simply stays hidden */}
+  }
+
+  Future<void> _loadChecklist() async {
+    _checklistLoading = true;
+    try {
+      final type = _job?['booking_type']?.toString() == 'subscription' ? 'subscription' : 'ondemand';
+      final items = await _api.getChecklist(type);
+      if (mounted) setState(() {
+        _checklistItems = items.isNotEmpty ? items : List<Map<String, dynamic>>.from(_fallbackChecklist);
+        _checklistLoaded = true;
+      });
+    } catch (_) {
+      if (mounted && _checklistItems.isEmpty) {
+        setState(() => _checklistItems = List<Map<String, dynamic>>.from(_fallbackChecklist));
+      }
+    } finally {
+      _checklistLoading = false;
+    }
+  }
+
+  Future<void> _loadReport() async {
+    _reportLoading = true;
+    try {
+      final res = await _api.getVisitReport(widget.jobId);
+      if (mounted) setState(() {
+        _report = res;
+        final grouped = <String, List<Map<String, dynamic>>>{};
+        for (final p in (res['photos'] as List? ?? [])) {
+          if (p is! Map) continue;
+          final t = p['type']?.toString() ?? 'before';
+          (grouped[t] ??= []).add(Map<String, dynamic>.from(p));
+        }
+        _photos = grouped;
+      });
+    } catch (_) {/* keep whatever we had */} finally {
+      _reportLoading = false;
     }
   }
 
@@ -131,11 +229,33 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
     }
   }
 
+  /// Best-effort current GPS fix; null when permission is denied or it times out.
+  Future<Position?> _currentPosition() async {
+    try {
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) return null;
+      return await Geolocator
+          .getCurrentPosition(desiredAccuracy: LocationAccuracy.high)
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _updateStatus(String newStatus) async {
     setState(() => _acting = true);
     HapticFeedback.mediumImpact();
+    // Send current GPS with 'arrived' (and 'completed' — see _completeJob).
+    Position? pos;
+    if (newStatus == 'arrived') pos = await _currentPosition();
     try {
-      await _api.updateBookingStatus(bookingId: widget.jobId, status: newStatus);
+      await _api.updateBookingStatus(
+        bookingId: widget.jobId, status: newStatus,
+        latitude: pos?.latitude, longitude: pos?.longitude,
+      );
       await _load(quiet: true);
       if (mounted) showAppToast(context,
         newStatus == 'en_route' ? 'Journey started! Location tracking active' :
@@ -174,9 +294,19 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
     launchUrl(Uri.parse('tel:$phone'), mode: LaunchMode.externalApplication);
   }
 
+  void _callSupervisor() {
+    final phone = _supervisor?['phone']?.toString();
+    if (phone == null || phone.isEmpty) return;
+    launchUrl(Uri.parse('tel:$phone'), mode: LaunchMode.externalApplication);
+  }
+
   Future<void> _verifyOtp() async {
     final otp = _otpCtrls.map((c) => c.text).join();
     if (otp.length < 4) return;
+    if ((_photos['before']?.length ?? 0) < 1) {
+      showAppToast(context, 'Take at least one Before photo before starting work', isError: true);
+      return;
+    }
     setState(() => _acting = true);
     try {
       await _api.verifyVisitOtp(widget.jobId, otp);
@@ -195,35 +325,72 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
   }
 
   Future<void> _completeJob() async {
-    if (_beforeImg == null || _afterImg == null) {
-      showAppToast(context, 'Please take both before and after photos', isError: true);
+    if ((_photos['before']?.length ?? 0) < 1) {
+      showAppToast(context, 'Take at least one Before photo first', isError: true);
+      return;
+    }
+    if ((_photos['after']?.length ?? 0) < 1) {
+      showAppToast(context, 'Take at least one After photo before completing', isError: true);
       return;
     }
     setState(() => _acting = true);
-    final completedTasks = <String>[];
-    for (int i = 0; i < _checklistItems.length; i++) {
-      if (_checklist[i]) completedTasks.add(_checklistItems[i]);
-    }
+    final pos = await _currentPosition();
     try {
       await _api.updateBookingStatus(
         bookingId: widget.jobId, status: 'completed',
         notes: _notesCtrl.text.isNotEmpty ? _notesCtrl.text : null,
         extraPlants: _extraPlants > 0 ? _extraPlants : null,
-        beforeImage: _beforeImg, afterImage: _afterImg,
-        checklistDone: completedTasks,
+        checklistDone: _checklistDone.toList(),
+        latitude: pos?.latitude, longitude: pos?.longitude,
       );
       await _load(quiet: true);
       if (mounted) showAppToast(context, 'Job completed! Excellent work', isSuccess: true);
     } on ApiException catch (e) {
+      // Server may 400 with "After photo is required…" — surface its message.
       if (mounted) showAppToast(context, e.message, isError: true);
     } finally {
       if (mounted) setState(() => _acting = false);
     }
   }
 
-  Future<void> _pickImage(bool isBefore) async {
+  // ── VISIT PHOTOS ──────────────────────────────────────────────────────────
+  int _photoCount(String type) =>
+      (_photos[type]?.length ?? 0) + _pending.where((p) => p.type == type).length;
+
+  Future<void> _addVisitPhoto(String type) async {
+    if (_photoCount(type) >= 10) {
+      showAppToast(context, 'Maximum 10 $type photos allowed', isError: true);
+      return;
+    }
     final f = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80);
-    if (f != null) setState(() => isBefore ? _beforeImg = f : _afterImg = f);
+    if (f == null || !mounted) return;
+    final p = _PendingPhoto(f, type);
+    setState(() => _pending.add(p));
+    await _uploadPendingPhoto(p);
+  }
+
+  Future<void> _uploadPendingPhoto(_PendingPhoto p) async {
+    if (mounted) setState(() { p.uploading = true; p.failed = false; });
+    final pos = await _currentPosition();
+    try {
+      final created = await _api.uploadVisitPhoto(
+        bookingId: widget.jobId, photo: p.file, type: p.type,
+        latitude: pos?.latitude, longitude: pos?.longitude,
+      );
+      if (!mounted) return;
+      setState(() {
+        _pending.remove(p);
+        (_photos[p.type] ??= []).add(created);
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() { p.uploading = false; p.failed = true; });
+      showAppToast(context, e.message, isError: true);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() { p.uploading = false; p.failed = true; });
+      showAppToast(context, 'Photo upload failed — tap the photo to retry', isError: true);
+    }
   }
 
   Future<void> _openMaps() async {
@@ -234,6 +401,54 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
         ? Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng')
         : Uri.parse('https://www.google.com/maps/search/${Uri.encodeComponent(addr ?? '')}');
     if (await canLaunchUrl(uri)) launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  // ── BOTTOM SHEETS ─────────────────────────────────────────────────────────
+  Future<T?> _openSheet<T>(Widget sheet) => showModalBottomSheet<T>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => sheet,
+      );
+
+  Future<void> _openChecklistSheet() async {
+    if (!_checklistLoaded && !_checklistLoading) await _loadChecklist();
+    if (!mounted) return;
+    await _openSheet(_ChecklistSheet(
+      items: _checklistItems.isNotEmpty ? _checklistItems : List<Map<String, dynamic>>.from(_fallbackChecklist),
+      done: _checklistDone,
+    ));
+    if (mounted) setState(() {}); // reflect selections on the report row
+  }
+
+  Future<void> _openHealthSheet() async {
+    final submitted = await _openSheet<bool>(_HealthSheet(bookingId: widget.jobId));
+    if (submitted == true && mounted) {
+      showAppToast(context, 'Plant health report saved', isSuccess: true);
+      _loadReport();
+    }
+  }
+
+  Future<void> _openMaterialsSheet() async {
+    final submitted = await _openSheet<bool>(_MaterialsSheet(bookingId: widget.jobId));
+    if (submitted == true && mounted) {
+      showAppToast(context, 'Materials recorded', isSuccess: true);
+      _loadReport();
+    }
+  }
+
+  Future<void> _openLeadSheet() async {
+    final submitted = await _openSheet<bool>(_LeadSheet(bookingId: widget.jobId));
+    if (submitted == true && mounted) {
+      showAppToast(context, 'Sent to supervisor for approval', isSuccess: true);
+    }
+  }
+
+  Future<void> _openEscalationSheet() async {
+    final submitted = await _openSheet<bool>(_EscalationSheet(bookingId: widget.jobId));
+    if (submitted == true && mounted) {
+      showAppToast(context, 'Issue reported to your supervisor', isSuccess: true);
+    }
   }
 
   @override
@@ -340,6 +555,12 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
               const SizedBox(height: 12),
             ],
 
+            // ── PHOTOS (arrived: before only · in_progress: all types) ───
+            if (['arrived', 'in_progress'].contains(_status)) ...[
+              _buildPhotosCard(),
+              const SizedBox(height: 12),
+            ],
+
             // ── OTP SECTION (only once gardener has physically arrived) ──
             if (_status == 'arrived') ...[
               _buildOtpSection(),
@@ -349,6 +570,12 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
             // ── VISIT COUNTDOWN TIMER ────────────────────────────────────
             if (_status == 'in_progress') ...[
               _buildVisitTimer(),
+              const SizedBox(height: 12),
+            ],
+
+            // ── VISIT REPORT ─────────────────────────────────────────────
+            if (_status == 'in_progress') ...[
+              _buildVisitReport(),
               const SizedBox(height: 12),
             ],
 
@@ -536,6 +763,121 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
     ).animate().fadeIn(delay: 100.ms).slideY(begin: 0.05, end: 0);
   }
 
+  // ── PHOTOS CARD ───────────────────────────────────────────────────────────
+  Widget _buildPhotosCard() {
+    final arrivedOnly = _status == 'arrived';
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), border: Border.all(color: AppColors.border), boxShadow: cardShadow()),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(width: 36, height: 36, decoration: BoxDecoration(color: AppColors.info.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+            child: const Icon(Icons.camera_alt_rounded, size: 18, color: AppColors.info)),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Visit Photos', style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.text)),
+            Text(arrivedOnly
+                ? 'Take at least 1 Before photo to start work'
+                : '1 Before photo to start · 1 After photo to complete',
+              style: GoogleFonts.poppins(fontSize: 11, color: AppColors.textMuted)),
+          ])),
+        ]),
+        const SizedBox(height: 16),
+        _PhotoTypeSection(
+          label: 'BEFORE',
+          uploaded: _photos['before'] ?? const [],
+          pending: _pending.where((p) => p.type == 'before').toList(),
+          onAdd: () => _addVisitPhoto('before'),
+          onRetry: _uploadPendingPhoto,
+        ),
+        if (!arrivedOnly) ...[
+          const SizedBox(height: 14),
+          _PhotoTypeSection(
+            label: 'AFTER',
+            uploaded: _photos['after'] ?? const [],
+            pending: _pending.where((p) => p.type == 'after').toList(),
+            onAdd: () => _addVisitPhoto('after'),
+            onRetry: _uploadPendingPhoto,
+          ),
+          const SizedBox(height: 14),
+          _PhotoTypeSection(
+            label: 'PROBLEM (OPTIONAL)',
+            uploaded: _photos['problem'] ?? const [],
+            pending: _pending.where((p) => p.type == 'problem').toList(),
+            onAdd: () => _addVisitPhoto('problem'),
+            onRetry: _uploadPendingPhoto,
+          ),
+        ],
+      ]),
+    ).animate().fadeIn(delay: 100.ms);
+  }
+
+  // ── VISIT REPORT CARD ─────────────────────────────────────────────────────
+  Widget _buildVisitReport() {
+    final healthCount = (_report?['health_reports'] as List?)?.length ?? 0;
+    final materialsCount = (_report?['materials'] as List?)?.length ?? 0;
+    final checklistTotal = _checklistItems.isNotEmpty ? _checklistItems.length : _fallbackChecklist.length;
+    final supPhone = _supervisor?['phone']?.toString();
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), border: Border.all(color: AppColors.border), boxShadow: cardShadow()),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(width: 36, height: 36, decoration: BoxDecoration(color: AppColors.forest.withOpacity(0.08), borderRadius: BorderRadius.circular(10)),
+            child: const Icon(Icons.assignment_rounded, size: 18, color: AppColors.forest)),
+          const SizedBox(width: 12),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Visit Report', style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.text)),
+            Text('Record what you did during this visit', style: GoogleFonts.poppins(fontSize: 11, color: AppColors.textMuted)),
+          ])),
+        ]),
+        const SizedBox(height: 14),
+        _ReportRow(
+          icon: Icons.checklist_rounded, color: AppColors.success,
+          title: 'Checklist',
+          subtitle: '${_checklistDone.length} of $checklistTotal tasks done',
+          done: _checklistDone.isNotEmpty,
+          onTap: _openChecklistSheet,
+        ),
+        _ReportRow(
+          icon: Icons.local_florist_rounded, color: AppColors.forest,
+          title: 'Plant Health',
+          subtitle: healthCount > 0 ? '$healthCount report${healthCount == 1 ? '' : 's'} submitted' : 'Log plant conditions',
+          done: healthCount > 0,
+          onTap: _openHealthSheet,
+        ),
+        _ReportRow(
+          icon: Icons.inventory_2_rounded, color: AppColors.info,
+          title: 'Materials Used',
+          subtitle: materialsCount > 0 ? '$materialsCount item${materialsCount == 1 ? '' : 's'} recorded' : 'Vermicompost, fertiliser, pots...',
+          done: materialsCount > 0,
+          onTap: _openMaterialsSheet,
+        ),
+        _ReportRow(
+          icon: Icons.lightbulb_outline_rounded, color: AppColors.goldDark,
+          title: 'Suggest Service',
+          subtitle: 'Recommend a service to this customer',
+          onTap: _openLeadSheet,
+        ),
+        _ReportRow(
+          icon: Icons.report_problem_rounded, color: AppColors.error,
+          title: 'Report Issue',
+          subtitle: 'Escalate a problem to your supervisor',
+          onTap: _openEscalationSheet,
+        ),
+        if (supPhone != null && supPhone.isNotEmpty)
+          _ReportRow(
+            icon: Icons.support_agent_rounded, color: AppColors.warning,
+            title: 'Call Supervisor',
+            subtitle: _supervisor?['name']?.toString() ?? 'Get help on this visit',
+            onTap: _callSupervisor,
+            isLast: true,
+          ),
+      ]),
+    ).animate().fadeIn(delay: 120.ms);
+  }
+
   Widget _buildCompleteForm() {
     return Container(
       padding: const EdgeInsets.all(20),
@@ -543,47 +885,11 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Container(width: 36, height: 36, decoration: BoxDecoration(color: AppColors.success.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
-            child: const Icon(Icons.camera_alt_rounded, size: 18, color: AppColors.success)),
+            child: const Icon(Icons.check_circle_rounded, size: 18, color: AppColors.success)),
           const SizedBox(width: 12),
           Text('Complete Visit', style: GoogleFonts.poppins(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.text)),
         ]),
         const SizedBox(height: 20),
-        // Photos
-        Row(children: [
-          Expanded(child: _PhotoTile(label: 'Before', file: _beforeImg, onTap: () => _pickImage(true))),
-          const SizedBox(width: 12),
-          Expanded(child: _PhotoTile(label: 'After', file: _afterImg, onTap: () => _pickImage(false))),
-        ]),
-        const SizedBox(height: 16),
-        // Checklist
-        Text('TASKS COMPLETED', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
-        const SizedBox(height: 8),
-        ...List.generate(_checklistItems.length, (i) => GestureDetector(
-          onTap: () => setState(() => _checklist[i] = !_checklist[i]),
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: _checklist[i] ? AppColors.success.withOpacity(0.07) : AppColors.bgSubtle,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: _checklist[i] ? AppColors.success.withOpacity(0.4) : AppColors.border),
-            ),
-            child: Row(children: [
-              Icon(
-                _checklist[i] ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
-                size: 20,
-                color: _checklist[i] ? AppColors.success : AppColors.textFaint,
-              ),
-              const SizedBox(width: 10),
-              Text(_checklistItems[i], style: GoogleFonts.poppins(
-                fontSize: 13,
-                fontWeight: _checklist[i] ? FontWeight.w600 : FontWeight.w400,
-                color: _checklist[i] ? AppColors.success : AppColors.text2,
-              )),
-            ]),
-          ),
-        )),
-        const SizedBox(height: 16),
         // Extra plants
         Text('EXTRA PLANTS SERVICED', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
         const SizedBox(height: 10),
@@ -608,44 +914,147 @@ class _JobDetailScreenState extends State<JobDetailScreen> {
         const SizedBox(height: 20),
         GkmButton(label: 'Mark Job Complete', icon: Icons.check_circle_rounded, loading: _acting, onTap: _completeJob),
       ]),
-    ).animate().fadeIn(delay: 100.ms);
+    ).animate().fadeIn(delay: 140.ms);
   }
 }
 
-class _PhotoTile extends StatelessWidget {
+// ── PENDING PHOTO ────────────────────────────────────────────────────────────
+class _PendingPhoto {
+  final XFile file;
+  final String type;
+  bool uploading = true;
+  bool failed = false;
+  _PendingPhoto(this.file, this.type);
+}
+
+// ── PHOTO TYPE SECTION (grid of thumbs + add button) ─────────────────────────
+class _PhotoTypeSection extends StatelessWidget {
   final String label;
-  final XFile? file;
+  final List<Map<String, dynamic>> uploaded;
+  final List<_PendingPhoto> pending;
+  final VoidCallback onAdd;
+  final void Function(_PendingPhoto) onRetry;
+  const _PhotoTypeSection({
+    required this.label, required this.uploaded, required this.pending,
+    required this.onAdd, required this.onRetry,
+  });
+
+  String? _url(Map<String, dynamic> p) =>
+      (p['url'] ?? p['photo_url'] ?? p['image_url'])?.toString();
+
+  @override
+  Widget build(BuildContext context) {
+    final count = uploaded.length + pending.length;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Text(label, style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
+        const SizedBox(width: 6),
+        if (count > 0)
+          Text('$count/10', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.textFaint)),
+      ]),
+      const SizedBox(height: 8),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        ...uploaded.map((p) {
+          final url = _url(p);
+          return _thumbFrame(
+            border: AppColors.forest,
+            child: url != null
+                ? Image.network(url, fit: BoxFit.cover, width: 72, height: 72,
+                    errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_rounded, size: 20, color: AppColors.textFaint))
+                : const Icon(Icons.photo_rounded, size: 20, color: AppColors.textFaint),
+          );
+        }),
+        ...pending.map((p) => GestureDetector(
+          onTap: p.failed ? () => onRetry(p) : null,
+          child: _thumbFrame(
+            border: p.failed ? AppColors.error : AppColors.border,
+            child: Stack(fit: StackFit.expand, children: [
+              kIsWeb
+                  ? Image.network(p.file.path, fit: BoxFit.cover)
+                  : Image.file(File(p.file.path), fit: BoxFit.cover),
+              Container(color: Colors.black38),
+              Center(
+                child: p.failed
+                    ? const Icon(Icons.refresh_rounded, size: 22, color: Colors.white)
+                    : const SizedBox(width: 18, height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+              ),
+            ]),
+          ),
+        )),
+        if (count < 10)
+          GestureDetector(
+            onTap: onAdd,
+            child: Container(
+              width: 72, height: 72,
+              decoration: BoxDecoration(
+                color: AppColors.bgSubtle,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: const Icon(Icons.add_a_photo_rounded, size: 20, color: AppColors.textFaint),
+            ),
+          ),
+      ]),
+    ]);
+  }
+
+  Widget _thumbFrame({required Color border, required Widget child}) => Container(
+        width: 72, height: 72,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: border, width: 1.5),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      );
+}
+
+// ── REPORT ACTION ROW ────────────────────────────────────────────────────────
+class _ReportRow extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String title, subtitle;
+  final bool done;
+  final bool isLast;
   final VoidCallback onTap;
-  const _PhotoTile({required this.label, required this.file, required this.onTap});
+  const _ReportRow({
+    required this.icon, required this.color, required this.title,
+    required this.subtitle, required this.onTap, this.done = false, this.isLast = false,
+  });
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: () { HapticFeedback.lightImpact(); onTap(); },
+      behavior: HitTestBehavior.opaque,
       child: Container(
-        height: 110,
+        margin: EdgeInsets.only(bottom: isLast ? 0 : 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: AppColors.bgSubtle,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: file != null ? AppColors.forest : AppColors.border, width: file != null ? 1.5 : 1, style: BorderStyle.solid),
-          image: file != null 
-            ? DecorationImage(
-                image: kIsWeb ? NetworkImage(file!.path) : FileImage(File(file!.path)) as ImageProvider, 
-                fit: BoxFit.cover
-              ) 
-            : null,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: done ? color.withOpacity(0.4) : AppColors.border),
         ),
-        child: file == null ? Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.add_a_photo_rounded, size: 24, color: AppColors.textFaint),
-          const SizedBox(height: 6),
-          Text(label, style: GoogleFonts.poppins(fontSize: 12, color: AppColors.textMuted, fontWeight: FontWeight.w600)),
-        ]) : Align(alignment: Alignment.topRight, child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(color: AppColors.forest, borderRadius: BorderRadius.circular(99)),
-            child: Text(label, style: GoogleFonts.poppins(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w700)),
+        child: Row(children: [
+          Container(
+            width: 34, height: 34,
+            decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(9)),
+            child: Icon(icon, size: 17, color: color),
           ),
-        )),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.text)),
+            Text(subtitle, style: GoogleFonts.poppins(fontSize: 11, color: AppColors.textMuted),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+          ])),
+          if (done)
+            const Padding(
+              padding: EdgeInsets.only(right: 4),
+              child: Icon(Icons.check_circle_rounded, size: 16, color: AppColors.success),
+            ),
+          const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.textFaint),
+        ]),
       ),
     );
   }
@@ -668,6 +1077,550 @@ class _CountBtn extends StatelessWidget {
         ),
         child: Icon(icon, size: 18, color: onTap != null ? AppColors.forest : AppColors.textFaint),
       ),
+    );
+  }
+}
+
+// ── SHEET SCAFFOLD (shared chrome for the bottom sheets) ─────────────────────
+class _SheetScaffold extends StatelessWidget {
+  final String title, subtitle;
+  final List<Widget> children;
+  const _SheetScaffold({required this.title, required this.subtitle, required this.children});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.only(topLeft: Radius.circular(28), topRight: Radius.circular(28)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Center(child: Container(width: 40, height: 4,
+                  decoration: BoxDecoration(color: AppColors.border, borderRadius: BorderRadius.circular(99)))),
+              const SizedBox(height: 18),
+              Text(title, style: GoogleFonts.poppins(fontSize: 17, fontWeight: FontWeight.w700, color: AppColors.text)),
+              const SizedBox(height: 4),
+              Text(subtitle, style: GoogleFonts.poppins(fontSize: 12, color: AppColors.textMuted)),
+              const SizedBox(height: 18),
+              ...children,
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── CHECKLIST SHEET ──────────────────────────────────────────────────────────
+class _ChecklistSheet extends StatefulWidget {
+  final List<Map<String, dynamic>> items;
+  final Set<String> done; // shared with the screen — labels of completed tasks
+  const _ChecklistSheet({required this.items, required this.done});
+  @override State<_ChecklistSheet> createState() => _ChecklistSheetState();
+}
+class _ChecklistSheetState extends State<_ChecklistSheet> {
+  @override
+  Widget build(BuildContext context) {
+    return _SheetScaffold(
+      title: 'Task Checklist',
+      subtitle: 'Tick off tasks as you complete them.',
+      children: [
+        ...widget.items.map((item) {
+          final label = (item['label'] ?? item['key'] ?? '').toString();
+          final required = item['required'] == true;
+          final checked = widget.done.contains(label);
+          return GestureDetector(
+            onTap: () => setState(() {
+              if (checked) { widget.done.remove(label); } else { widget.done.add(label); }
+            }),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: checked ? AppColors.success.withOpacity(0.07) : AppColors.bgSubtle,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: checked ? AppColors.success.withOpacity(0.4) : AppColors.border),
+              ),
+              child: Row(children: [
+                Icon(
+                  checked ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                  size: 20,
+                  color: checked ? AppColors.success : AppColors.textFaint,
+                ),
+                const SizedBox(width: 10),
+                Expanded(child: Text(label, style: GoogleFonts.poppins(
+                  fontSize: 13,
+                  fontWeight: checked ? FontWeight.w600 : FontWeight.w400,
+                  color: checked ? AppColors.success : AppColors.text2,
+                ))),
+                if (required)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.18), borderRadius: BorderRadius.circular(99)),
+                    child: Text('REQUIRED', style: GoogleFonts.poppins(fontSize: 8, fontWeight: FontWeight.w700, color: AppColors.goldDark, letterSpacing: 0.5)),
+                  ),
+              ]),
+            ),
+          );
+        }),
+        const SizedBox(height: 12),
+        GkmButton(label: 'Done', icon: Icons.check_rounded, onTap: () => Navigator.pop(context)),
+      ],
+    );
+  }
+}
+
+// ── PLANT HEALTH SHEET ───────────────────────────────────────────────────────
+class _HealthSheet extends StatefulWidget {
+  final int bookingId;
+  const _HealthSheet({required this.bookingId});
+  @override State<_HealthSheet> createState() => _HealthSheetState();
+}
+class _HealthSheetState extends State<_HealthSheet> {
+  final _api = ApiService();
+  final _picker = ImagePicker();
+  final _remarksCtrl = TextEditingController();
+  final Set<String> _conditions = {};
+  XFile? _photo;
+  bool _submitting = false;
+
+  @override
+  void dispose() { _remarksCtrl.dispose(); super.dispose(); }
+
+  Future<void> _pickPhoto() async {
+    final f = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80);
+    if (f != null && mounted) setState(() => _photo = f);
+  }
+
+  Future<void> _submit() async {
+    if (_conditions.isEmpty) {
+      showAppToast(context, 'Select at least one condition', isError: true);
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      String? photoUrl;
+      if (_photo != null) {
+        final created = await _api.uploadVisitPhoto(
+            bookingId: widget.bookingId, photo: _photo!, type: 'health');
+        photoUrl = (created['url'] ?? created['photo_url'] ?? created['image_url'])?.toString();
+      }
+      await _api.submitHealthReport(
+        widget.bookingId,
+        conditions: _conditions.toList(),
+        remarks: _remarksCtrl.text.trim(),
+        photoUrl: photoUrl,
+      );
+      if (mounted) Navigator.pop(context, true);
+    } on ApiException catch (e) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, e.message, isError: true); }
+    } catch (_) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, 'Could not save health report', isError: true); }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SheetScaffold(
+      title: 'Plant Health',
+      subtitle: 'Select all conditions that apply to this garden.',
+      children: [
+        Wrap(
+          spacing: 8, runSpacing: 8,
+          children: kHealthConditionLabels.entries.map((e) {
+            final selected = _conditions.contains(e.key);
+            return GestureDetector(
+              onTap: () => setState(() {
+                if (selected) { _conditions.remove(e.key); } else { _conditions.add(e.key); }
+              }),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: selected ? AppColors.forest : AppColors.bgSubtle,
+                  borderRadius: BorderRadius.circular(99),
+                  border: Border.all(color: selected ? AppColors.forest : AppColors.border),
+                ),
+                child: Text(e.value, style: GoogleFonts.poppins(
+                  fontSize: 12, fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? Colors.white : AppColors.text2,
+                )),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 16),
+        Text('REMARKS (OPTIONAL)', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _remarksCtrl,
+          maxLines: 3,
+          style: GoogleFonts.poppins(fontSize: 14, color: AppColors.text2),
+          decoration: const InputDecoration(hintText: 'e.g. Aphids on the rose bushes...'),
+        ),
+        const SizedBox(height: 16),
+        Text('PHOTO (OPTIONAL)', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
+        const SizedBox(height: 8),
+        GestureDetector(
+          onTap: _pickPhoto,
+          child: Container(
+            height: 90, width: 90,
+            decoration: BoxDecoration(
+              color: AppColors.bgSubtle,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _photo != null ? AppColors.forest : AppColors.border, width: _photo != null ? 1.5 : 1),
+              image: _photo != null
+                  ? DecorationImage(
+                      image: kIsWeb ? NetworkImage(_photo!.path) : FileImage(File(_photo!.path)) as ImageProvider,
+                      fit: BoxFit.cover)
+                  : null,
+            ),
+            child: _photo == null
+                ? const Icon(Icons.add_a_photo_rounded, size: 22, color: AppColors.textFaint)
+                : null,
+          ),
+        ),
+        const SizedBox(height: 18),
+        GkmButton(label: 'Save Health Report', icon: Icons.local_florist_rounded, loading: _submitting, onTap: _submit),
+      ],
+    );
+  }
+}
+
+// ── MATERIALS SHEET ──────────────────────────────────────────────────────────
+class _MaterialsSheet extends StatefulWidget {
+  final int bookingId;
+  const _MaterialsSheet({required this.bookingId});
+  @override State<_MaterialsSheet> createState() => _MaterialsSheetState();
+}
+class _MaterialsSheetState extends State<_MaterialsSheet> {
+  final _api = ApiService();
+  final List<_MaterialRowCtrl> _rows = [_MaterialRowCtrl()];
+  bool _submitting = false;
+
+  static const _quickItems = ['Vermicompost', 'Fertiliser', 'Pesticide', 'Pots', 'Other'];
+
+  @override
+  void dispose() {
+    for (final r in _rows) r.dispose();
+    super.dispose();
+  }
+
+  void _quickAdd(String name) {
+    // Fill the first empty row, otherwise append a new one.
+    final target = _rows.where((r) => r.item.text.trim().isEmpty).toList();
+    setState(() {
+      if (target.isNotEmpty) {
+        if (name != 'Other') target.first.item.text = name;
+      } else {
+        final r = _MaterialRowCtrl();
+        if (name != 'Other') r.item.text = name;
+        _rows.add(r);
+      }
+    });
+  }
+
+  Future<void> _submit() async {
+    final items = <Map<String, dynamic>>[];
+    for (final r in _rows) {
+      final name = r.item.text.trim();
+      if (name.isEmpty) continue;
+      final qty = num.tryParse(r.qty.text.trim()) ?? 1;
+      final unit = r.unit.text.trim();
+      items.add({'item': name, 'quantity': qty, if (unit.isNotEmpty) 'unit': unit});
+    }
+    if (items.isEmpty) {
+      showAppToast(context, 'Add at least one material', isError: true);
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await _api.submitMaterials(widget.bookingId, items);
+      if (mounted) Navigator.pop(context, true);
+    } on ApiException catch (e) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, e.message, isError: true); }
+    } catch (_) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, 'Could not save materials', isError: true); }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SheetScaffold(
+      title: 'Materials Used',
+      subtitle: 'What did you use or install during this visit?',
+      children: [
+        Wrap(
+          spacing: 8, runSpacing: 8,
+          children: _quickItems.map((q) => GestureDetector(
+            onTap: () => _quickAdd(q),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: AppColors.forest.withOpacity(0.06),
+                borderRadius: BorderRadius.circular(99),
+                border: Border.all(color: AppColors.forest.withOpacity(0.25)),
+              ),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.add_rounded, size: 13, color: AppColors.forest),
+                const SizedBox(width: 4),
+                Text(q, style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.forest)),
+              ]),
+            ),
+          )).toList(),
+        ),
+        const SizedBox(height: 14),
+        ...List.generate(_rows.length, (i) {
+          final r = _rows[i];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(children: [
+              Expanded(flex: 5, child: TextField(
+                controller: r.item,
+                style: GoogleFonts.poppins(fontSize: 13, color: AppColors.text2),
+                decoration: const InputDecoration(hintText: 'Item', isDense: true),
+              )),
+              const SizedBox(width: 8),
+              Expanded(flex: 2, child: TextField(
+                controller: r.qty,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: GoogleFonts.poppins(fontSize: 13, color: AppColors.text2),
+                decoration: const InputDecoration(hintText: 'Qty', isDense: true),
+              )),
+              const SizedBox(width: 8),
+              Expanded(flex: 3, child: TextField(
+                controller: r.unit,
+                style: GoogleFonts.poppins(fontSize: 13, color: AppColors.text2),
+                decoration: const InputDecoration(hintText: 'Unit (kg)', isDense: true),
+              )),
+              if (_rows.length > 1)
+                GestureDetector(
+                  onTap: () {
+                    final removed = _rows.removeAt(i);
+                    setState(() {});
+                    // Dispose after the frame so the TextFields detach first.
+                    WidgetsBinding.instance.addPostFrameCallback((_) => removed.dispose());
+                  },
+                  child: const Padding(
+                    padding: EdgeInsets.only(left: 6),
+                    child: Icon(Icons.remove_circle_outline_rounded, size: 20, color: AppColors.error),
+                  ),
+                ),
+            ]),
+          );
+        }),
+        GestureDetector(
+          onTap: () => setState(() => _rows.add(_MaterialRowCtrl())),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.add_circle_outline_rounded, size: 16, color: AppColors.forest),
+              const SizedBox(width: 6),
+              Text('Add another item', style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.forest)),
+            ]),
+          ),
+        ),
+        const SizedBox(height: 14),
+        GkmButton(label: 'Save Materials', icon: Icons.inventory_2_rounded, loading: _submitting, onTap: _submit),
+      ],
+    );
+  }
+}
+
+class _MaterialRowCtrl {
+  final item = TextEditingController();
+  final qty = TextEditingController();
+  final unit = TextEditingController();
+  void dispose() { item.dispose(); qty.dispose(); unit.dispose(); }
+}
+
+// ── SUGGEST SERVICE (LEAD) SHEET ─────────────────────────────────────────────
+class _LeadSheet extends StatefulWidget {
+  final int bookingId;
+  const _LeadSheet({required this.bookingId});
+  @override State<_LeadSheet> createState() => _LeadSheetState();
+}
+class _LeadSheetState extends State<_LeadSheet> {
+  final _api = ApiService();
+  final _noteCtrl = TextEditingController();
+  String? _type;
+  bool _submitting = false;
+
+  @override
+  void dispose() { _noteCtrl.dispose(); super.dispose(); }
+
+  Future<void> _submit() async {
+    if (_type == null) {
+      showAppToast(context, 'Select a service type', isError: true);
+      return;
+    }
+    if (_noteCtrl.text.trim().isEmpty) {
+      showAppToast(context, 'Add a short note for your supervisor', isError: true);
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await _api.createLead(bookingId: widget.bookingId, type: _type!, note: _noteCtrl.text.trim());
+      if (mounted) Navigator.pop(context, true);
+    } on ApiException catch (e) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, e.message, isError: true); }
+    } catch (_) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, 'Could not send suggestion', isError: true); }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SheetScaffold(
+      title: 'Suggest Service',
+      subtitle: 'Recommend an extra service for this customer. Your supervisor will follow up.',
+      children: [
+        Wrap(
+          spacing: 8, runSpacing: 8,
+          children: kLeadTypeLabels.entries.map((e) {
+            final selected = _type == e.key;
+            return GestureDetector(
+              onTap: () => setState(() => _type = e.key),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: selected ? AppColors.forest : AppColors.bgSubtle,
+                  borderRadius: BorderRadius.circular(99),
+                  border: Border.all(color: selected ? AppColors.forest : AppColors.border),
+                ),
+                child: Text(e.value, style: GoogleFonts.poppins(
+                  fontSize: 12, fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? Colors.white : AppColors.text2,
+                )),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 16),
+        Text('NOTE', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _noteCtrl,
+          maxLines: 3,
+          style: GoogleFonts.poppins(fontSize: 14, color: AppColors.text2),
+          decoration: const InputDecoration(hintText: 'e.g. Customer wants 4 large pots for the balcony...'),
+        ),
+        const SizedBox(height: 18),
+        GkmButton(label: 'Send Suggestion', icon: Icons.send_rounded, loading: _submitting, onTap: _submit),
+      ],
+    );
+  }
+}
+
+// ── REPORT ISSUE (ESCALATION) SHEET ──────────────────────────────────────────
+class _EscalationSheet extends StatefulWidget {
+  final int bookingId;
+  const _EscalationSheet({required this.bookingId});
+  @override State<_EscalationSheet> createState() => _EscalationSheetState();
+}
+class _EscalationSheetState extends State<_EscalationSheet> {
+  final _api = ApiService();
+  final _picker = ImagePicker();
+  final _noteCtrl = TextEditingController();
+  String? _type;
+  XFile? _photo;
+  bool _submitting = false;
+
+  @override
+  void dispose() { _noteCtrl.dispose(); super.dispose(); }
+
+  Future<void> _pickPhoto() async {
+    final f = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80);
+    if (f != null && mounted) setState(() => _photo = f);
+  }
+
+  Future<void> _submit() async {
+    if (_type == null) {
+      showAppToast(context, 'Select the issue type', isError: true);
+      return;
+    }
+    if (_noteCtrl.text.trim().isEmpty) {
+      showAppToast(context, 'Describe the issue briefly', isError: true);
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await _api.createEscalation(
+        bookingId: widget.bookingId, type: _type!, note: _noteCtrl.text.trim(), photo: _photo);
+      if (mounted) Navigator.pop(context, true);
+    } on ApiException catch (e) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, e.message, isError: true); }
+    } catch (_) {
+      if (mounted) { setState(() => _submitting = false); showAppToast(context, 'Could not report the issue', isError: true); }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SheetScaffold(
+      title: 'Report Issue',
+      subtitle: 'This alerts your supervisor immediately.',
+      children: [
+        Wrap(
+          spacing: 8, runSpacing: 8,
+          children: kEscalationTypeLabels.entries.map((e) {
+            final selected = _type == e.key;
+            return GestureDetector(
+              onTap: () => setState(() => _type = e.key),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: selected ? AppColors.error : AppColors.bgSubtle,
+                  borderRadius: BorderRadius.circular(99),
+                  border: Border.all(color: selected ? AppColors.error : AppColors.border),
+                ),
+                child: Text(e.value, style: GoogleFonts.poppins(
+                  fontSize: 12, fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? Colors.white : AppColors.text2,
+                )),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 16),
+        Text('WHAT HAPPENED?', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _noteCtrl,
+          maxLines: 3,
+          style: GoogleFonts.poppins(fontSize: 14, color: AppColors.text2),
+          decoration: const InputDecoration(hintText: 'Describe the problem...'),
+        ),
+        const SizedBox(height: 16),
+        Text('PHOTO (OPTIONAL)', style: GoogleFonts.poppins(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.textMuted, letterSpacing: 0.8)),
+        const SizedBox(height: 8),
+        GestureDetector(
+          onTap: _pickPhoto,
+          child: Container(
+            height: 90, width: 90,
+            decoration: BoxDecoration(
+              color: AppColors.bgSubtle,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _photo != null ? AppColors.error : AppColors.border, width: _photo != null ? 1.5 : 1),
+              image: _photo != null
+                  ? DecorationImage(
+                      image: kIsWeb ? NetworkImage(_photo!.path) : FileImage(File(_photo!.path)) as ImageProvider,
+                      fit: BoxFit.cover)
+                  : null,
+            ),
+            child: _photo == null
+                ? const Icon(Icons.add_a_photo_rounded, size: 22, color: AppColors.textFaint)
+                : null,
+          ),
+        ),
+        const SizedBox(height: 18),
+        GkmButton(label: 'Report Issue', icon: Icons.report_problem_rounded, danger: true, loading: _submitting, onTap: _submit),
+      ],
     );
   }
 }
