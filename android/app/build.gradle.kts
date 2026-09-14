@@ -8,6 +8,9 @@ plugins {
     // of this file once android/app/google-services.json exists.
     id("com.google.gms.google-services") apply false
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
 val keystorePropertiesFile = rootProject.file("key.properties")
 val keystoreProperties = Properties()
 
@@ -62,10 +65,6 @@ dependencies {
 
 flutter {
     source = "../.."
-}
-
-// Firebase (google-services) — applied only when the config file is present,
-// so the app still builds before Firebase is set up. See FIREBASE_SETUP.md.
 }
 
 // Firebase (google-services) — applied only when the config file is present,
